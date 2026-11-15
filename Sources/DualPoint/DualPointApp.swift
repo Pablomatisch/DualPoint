@@ -8,19 +8,8 @@ struct DualPointApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("DualPoint")
-                    .font(.headline)
-                Text("Independent cursor positions for every pointing device.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Divider()
-                Button("Quit DualPoint") {
-                    NSApp.terminate(nil)
-                }
-            }
-            .padding(12)
-            .frame(width: 300)
+            MenuBarContentView(model: .shared, engine: AppModel.shared.engine)
+                .environmentObject(AppModel.shared)
         } label: {
             Label("DualPoint", systemImage: "cursorarrow.rays")
         }
@@ -31,5 +20,14 @@ struct DualPointApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        AppModel.shared.start()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        AppModel.shared.stop()
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
     }
 }
