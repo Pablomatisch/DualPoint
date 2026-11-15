@@ -6,6 +6,8 @@ let package = Package(
     platforms: [.macOS(.v13)],
     products: [
         .executable(name: "DualPoint", targets: ["DualPoint"]),
+        .executable(name: "DualPointDiagnose", targets: ["DualPointCLI"]),
+        .executable(name: "DualPointSelfTest", targets: ["DualPointSelfTest"]),
         .library(name: "DualPointCore", targets: ["DualPointCore"]),
     ],
     targets: [
@@ -18,8 +20,13 @@ let package = Package(
             dependencies: ["DualPointCore"],
             path: "Sources/DualPoint"
         ),
-        .testTarget(
-            name: "DualPointCoreTests",
+        .executableTarget(
+            name: "DualPointCLI",
+            dependencies: ["DualPointCore"],
+            path: "Sources/DualPointCLI"
+        ),
+        .executableTarget(
+            name: "DualPointSelfTest",
             dependencies: ["DualPointCore"],
             path: "Tests/DualPointCoreTests"
         ),
