@@ -7,108 +7,257 @@ struct SettingsView: View {
     @ObservedObject var engine: DualPointEngine
 
     var body: some View {
-        HStack(spacing: 0) {
-            sidebar
-                .frame(width: 196)
+        ZStack {
+            WindowBackground()
+                .ignoresSafeArea()
 
-            Divider()
+            HStack(spacing: 0) {
+                sidebar
+                    .frame(width: 228)
 
-            ScrollView {
-                content
-                    .padding(22)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                contentArea
             }
-            .background(Color(nsColor: .windowBackgroundColor))
         }
-        .frame(minWidth: 760, minHeight: 560)
+        .frame(minWidth: 860, minHeight: 600)
+        .preferredColorScheme(.dark)
         .onAppear {
             model.refreshLoginItem()
             engine.refreshPermissions()
         }
     }
 
+    // MARK: - Sidebar
+
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 10) {
-                BrandIcon(size: 32)
-                VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 11) {
+                BrandIcon(size: 40, glow: true)
+                VStack(alignment: .leading, spacing: 2) {
                     Text("DualPoint")
-                        .font(.system(size: 13, weight: .bold, design: .rounded))
+                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .foregroundStyle(Brand.textPrimary)
                     Text("Version \(DualPointCore.version)")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(Brand.textTertiary)
                 }
+                Spacer(minLength: 0)
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 16)
+            .padding(.horizontal, 18)
+            .padding(.top, 46)
             .padding(.bottom, 12)
 
             StatusPill(text: engine.statusSummary, color: engine.statusColor)
+                .padding(.horizontal, 18)
+                .padding(.bottom, 18)
+
+            DividerLine()
                 .padding(.horizontal, 14)
-                .padding(.bottom, 14)
 
-            Divider()
-                .padding(.horizontal, 12)
+            SectionLabel(text: "Settings")
+                .padding(.horizontal, 20)
+                .padding(.top, 18)
+                .padding(.bottom, 8)
 
-            VStack(spacing: 3) {
+            VStack(spacing: 4) {
                 ForEach(SettingsTab.allCases) { tab in
-                    sidebarButton(tab)
+                    SidebarItem(
+                        tab: tab,
+                        selected: model.settingsTab == tab,
+                        badge: tab == .devices ? "\(engine.connectedDevices.count)" : nil
+                    ) {
+                        model.settingsTab = tab
+                    }
                 }
             }
-            .padding(8)
+            .padding(.horizontal, 10)
 
-            Spacer()
+            Spacer(minLength: 12)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("One cursor. Every device.")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Text("No Dock icon · macOS 13+")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
+            if !engine.hasCompletedOnboarding {
+                setupCard
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 18)
             }
-            .padding(14)
         }
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+        .background(
+            ZStack {
+                VisualEffectView(material: .sidebar, blending: .withinWindow, emphasized: false)
+                Color.black.opacity(0.16)
+                LinearGradient(
+                    colors: [Brand.accent.opacity(0.06), .clear],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+        )
+        .overlay(alignment: .trailing) {
+            Rectangle()
+                .fill(Color.white.opacity(0.08))
+                .frame(width: 1)
+        }
     }
 
-    private func sidebarButton(_ tab: SettingsTab) -> some View {
-        let selected = model.settingsTab == tab
-        return Button {
-            model.settingsTab = tab
-        } label: {
-            HStack(spacing: 9) {
-                Image(systemName: tab.symbol)
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 17)
-                    .foregroundStyle(selected ? Brand.accent : .secondary)
-                Text(tab.title)
-                    .font(.system(size: 12, weight: selected ? .semibold : .regular))
-                Spacer()
+    private var setupCard: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 7) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Brand.accent)
+                Text("Finish setup")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Brand.textPrimary)
             }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 7)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(selected ? Brand.accent.opacity(0.12) : Color.clear)
-            )
-            .contentShape(Rectangle())
+            Text("Assign each device to a display.")
+                .font(.system(size: 9.5))
+                .foregroundStyle(Brand.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Open Setup") {
+                model.openOnboarding()
+            }
+            .buttonStyle(SecondaryButtonStyle(compact: true))
         }
-        .buttonStyle(.plain)
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Brand.cardGradient)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Brand.cardEdge, lineWidth: 1)
+        )
+    }
+
+    // MARK: - Content
+
+    private var contentArea: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .top, spacing: 16) {
+                    ScreenHeader(
+                        title: model.settingsTab.title,
+                        subtitle: model.settingsTab.subtitle
+                    )
+                    Spacer(minLength: 12)
+                    if model.settingsTab == .devices {
+                        Button("Apply Recommended") {
+                            engine.applyRecommendedSetup()
+                        }
+                        .buttonStyle(PrimaryButtonStyle(compact: true))
+                        .disabled(engine.connectedDevices.isEmpty)
+                    }
+                }
+
+                ZStack(alignment: .topLeading) {
+                    tabContent
+                        .id(model.settingsTab)
+                        .transition(
+                            .asymmetric(
+                                insertion: .opacity.combined(with: .offset(y: 10)),
+                                removal: .opacity
+                            )
+                        )
+                }
+                .animation(.easeOut(duration: 0.22), value: model.settingsTab)
+            }
+            .padding(.horizontal, 30)
+            .padding(.top, 46)
+            .padding(.bottom, 32)
+            .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .scrollIndicators(.hidden)
     }
 
     @ViewBuilder
-    private var content: some View {
+    private var tabContent: some View {
         switch model.settingsTab {
         case .general:
             GeneralSettingsTab(model: model, engine: engine)
         case .devices:
             DevicesSettingsTab(model: model, engine: engine)
         case .activity:
-            ActivitySettingsTab(engine: engine)
+            ActivitySettingsTab(model: model, engine: engine)
         case .about:
             AboutSettingsTab()
         }
+    }
+}
+
+private extension SettingsTab {
+    var subtitle: String {
+        switch self {
+        case .general: return "Switching, permissions and launch."
+        case .devices: return "Choose where each device belongs."
+        case .activity: return "Recent switches and device events."
+        case .about: return "Version, privacy and files."
+        }
+    }
+}
+
+// MARK: - Sidebar item
+
+private struct SidebarItem: View {
+    let tab: SettingsTab
+    let selected: Bool
+    let badge: String?
+    let action: () -> Void
+
+    @StateObject private var hover = HoverStore()
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: tab.symbol)
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 18)
+                    .foregroundStyle(selected ? Color.white : Brand.textSecondary)
+
+                Text(tab.title)
+                    .font(.system(size: 12, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? Color.white : Brand.textSecondary)
+
+                Spacer(minLength: 4)
+
+                if let badge, badge != "0" {
+                    Text(badge)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(selected ? Color.white.opacity(0.9) : Brand.textTertiary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(Color.white.opacity(selected ? 0.16 : 0.06))
+                        )
+                }
+            }
+            .padding(.horizontal, 11)
+            .frame(height: 38)
+            .background(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: selected
+                                ? [Brand.accent.opacity(0.30), Brand.violet.opacity(0.16)]
+                                : [Color.white.opacity(hover.isHovering ? 0.07 : 0), Color.white.opacity(0)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .strokeBorder(
+                        selected ? Brand.accent.opacity(0.34) : Color.white.opacity(hover.isHovering ? 0.08 : 0),
+                        lineWidth: 1
+                    )
+            )
+            .shadow(color: selected ? Brand.accent.opacity(0.18) : .clear, radius: 10, x: 0, y: 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover.isHovering = $0 }
+        .animation(.easeOut(duration: 0.15), value: hover.isHovering)
     }
 }
 
@@ -118,118 +267,88 @@ private struct GeneralSettingsTab: View {
     @ObservedObject var model: AppModel
     @ObservedObject var engine: DualPointEngine
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            header(
-                title: "General",
-                subtitle: "Automatic switching, permissions and launch behavior."
-            )
+    private var hasPermission: Bool {
+        engine.permissions.hidAccessGranted && engine.permissions.listenEventAccessGranted
+    }
 
-            SettingsCard(
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            if !engine.hasCompletedOnboarding {
+                setupBanner
+            }
+
+            GlassCard(
                 title: "Cursor switching",
-                subtitle: "DualPoint restores a device's last position when you start using it."
+                subtitle: "Restores a device's last position when you start using it.",
+                symbol: "arrow.left.arrow.right"
             ) {
                 Toggle(isOn: Binding(
                     get: { engine.automaticSwitching },
                     set: { engine.setAutomaticSwitching($0) }
                 )) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Automatically switch cursor position")
+                        Text("Switch automatically")
                             .font(.system(size: 12, weight: .medium))
-                        Text("Turn this off to keep the cursor where it is. Positions are still remembered.")
+                            .foregroundStyle(Brand.textPrimary)
+                        Text("When off, the cursor stays where it is.")
                             .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Brand.textSecondary)
                     }
                 }
                 .toggleStyle(.switch)
-
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(engine.statusColor)
-                        .frame(width: 7, height: 7)
-                    Text(engine.statusSummary)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    if !engine.hasCompletedOnboarding {
-                        Button("Run Setup") { model.openOnboarding() }
-                            .controlSize(.small)
-                    }
-                }
+                .tint(Brand.accent)
             }
 
-            SettingsCard(
-                title: "Setup",
-                subtitle: "The setup assistant explains permissions and assigns each device to a display."
+            GlassCard(
+                title: "Permissions",
+                subtitle: "Input Monitoring is all DualPoint needs.",
+                symbol: "lock.shield.fill"
             ) {
-                HStack {
+                StatusRow(
+                    title: "Input Monitoring",
+                    detail: hasPermission
+                        ? "Granted."
+                        : "Required to identify pointing devices.",
+                    isGood: hasPermission
+                )
+
+                if !engine.permissions.eventTapAvailable {
                     StatusRow(
-                        title: engine.hasCompletedOnboarding ? "Setup complete" : "Setup not finished",
-                        detail: engine.hasCompletedOnboarding
-                            ? "You can run the assistant again at any time."
-                            : "Automatic switching stays paused until setup is complete.",
-                        isGood: engine.hasCompletedOnboarding
+                        title: "Pointer monitoring",
+                        detail: engine.eventTapFailure ?? "Waiting for Input Monitoring.",
+                        isGood: false
+                    )
+                }
+
+                if !engine.permissions.accessibilityTrusted && !engine.permissions.eventTapAvailable {
+                    StatusRow(
+                        title: "Accessibility",
+                        detail: "Only needed if macOS refuses the event tap.",
+                        isGood: false
                     )
                 }
 
                 HStack(spacing: 8) {
-                    Button("Run Setup Assistant") { model.openOnboarding() }
-                    if engine.hasCompletedOnboarding {
-                        Button("Reset Setup") { engine.resetOnboarding() }
-                            .foregroundStyle(.red)
+                    if !hasPermission {
+                        Button("Grant Input Monitoring") { engine.requestInputMonitoring() }
+                            .buttonStyle(PrimaryButtonStyle(compact: true))
                     }
-                }
-                .controlSize(.small)
-            }
-
-            SettingsCard(
-                title: "Permissions",
-                subtitle: "Input Monitoring is the only permission required for normal operation."
-            ) {
-                StatusRow(
-                    title: "Input Monitoring",
-                    detail: engine.permissions.hidAccessGranted && engine.permissions.listenEventAccessGranted
-                        ? "Granted. DualPoint can identify pointing devices."
-                        : "Required to identify which physical device moved.",
-                    isGood: engine.permissions.hidAccessGranted && engine.permissions.listenEventAccessGranted
-                )
-
-                StatusRow(
-                    title: "Pointer event monitoring",
-                    detail: engine.eventTapFailure
-                        ?? (engine.permissions.eventTapAvailable
-                            ? "Listening for pointer activity. Events are never modified."
-                            : "Unavailable until Input Monitoring is granted."),
-                    isGood: engine.permissions.eventTapAvailable
-                )
-
-                StatusRow(
-                    title: "Accessibility",
-                    detail: engine.permissions.accessibilityTrusted
-                        ? "Granted, but not normally needed."
-                        : "Only needed if macOS refuses the listen-only event tap.",
-                    isGood: engine.permissions.accessibilityTrusted
-                )
-
-                HStack(spacing: 8) {
-                    Button("Grant Input Monitoring") { engine.requestInputMonitoring() }
                     Button("Open System Settings") { engine.openInputMonitoringSettings() }
+                        .buttonStyle(SecondaryButtonStyle(compact: true))
                     Button("Check Again") { engine.refreshPermissions() }
+                        .buttonStyle(GhostButtonStyle(compact: true))
                     if !engine.permissions.eventTapAvailable && engine.permissions.listenEventAccessGranted {
                         Button("Request Accessibility") { engine.requestAccessibility() }
+                            .buttonStyle(GhostButtonStyle(compact: true))
                     }
+                    Spacer(minLength: 0)
                 }
-                .controlSize(.small)
-
-                Text("Permission is tied to the app's signature. Rebuilding an ad-hoc signed copy may require granting it again.")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            SettingsCard(
+            GlassCard(
                 title: "Launch at login",
-                subtitle: "DualPoint runs quietly in the menu bar without a Dock icon."
+                subtitle: "Starts quietly in the menu bar.",
+                symbol: "power"
             ) {
                 Toggle(isOn: Binding(
                     get: { model.loginItemStatus.isOn },
@@ -237,54 +356,75 @@ private struct GeneralSettingsTab: View {
                 )) {
                     Text("Open DualPoint at login")
                         .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Brand.textPrimary)
                 }
                 .toggleStyle(.switch)
+                .tint(Brand.accent)
                 .disabled(model.loginItemStatus == .notFound)
 
-                HStack(spacing: 6) {
-                    Text("Status: \(model.loginItemStatus.label)")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    if model.loginItemStatus == .requiresApproval || model.loginItemStatus == .notFound {
-                        Button("Open Login Items") { engine.openLoginItemsSettings() }
-                            .controlSize(.small)
+                if model.loginItemStatus != .enabled || model.loginItemError != nil {
+                    HStack(spacing: 6) {
+                        Text(model.loginItemStatus.label)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Brand.textSecondary)
+                        Spacer()
+                        if model.loginItemStatus == .requiresApproval || model.loginItemStatus == .notFound {
+                            Button("Open Login Items") { engine.openLoginItemsSettings() }
+                                .buttonStyle(GhostButtonStyle(compact: true))
+                        }
                     }
                 }
 
                 if let error = model.loginItemError {
                     Text(error)
                         .font(.system(size: 10))
-                        .foregroundStyle(.red)
+                        .foregroundStyle(Brand.danger)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
                 if model.loginItemStatus == .notFound {
                     Text("Move DualPoint.app to /Applications to enable login launch.")
                         .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Brand.textTertiary)
                 }
-            }
-
-            SettingsCard(
-                title: "Files",
-                subtitle: "Everything DualPoint stores is human-readable and local to this Mac."
-            ) {
-                HStack(spacing: 8) {
-                    Button("Reveal Saved State") { model.revealStateFile() }
-                    Button("Reveal Log") { model.revealLogFile() }
-                    Button("Copy Diagnostics") { model.copyDiagnostics() }
-                }
-                .controlSize(.small)
-
-                Text(engine.store.fileURL.path)
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-                    .textSelection(.enabled)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
             }
         }
+    }
+
+    private var setupBanner: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(Brand.accent.opacity(0.16))
+                    .frame(width: 30, height: 30)
+                Image(systemName: "wand.and.stars")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Brand.accent)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Setup is not finished")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Brand.textPrimary)
+                Text("Assign each device to a display.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Brand.textSecondary)
+            }
+
+            Spacer(minLength: 4)
+
+            Button("Continue") { model.openOnboarding() }
+                .buttonStyle(PrimaryButtonStyle(compact: true))
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Brand.accent.opacity(0.07))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Brand.accent.opacity(0.18), lineWidth: 1)
+        )
     }
 }
 
@@ -296,75 +436,79 @@ private struct DevicesSettingsTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top) {
-                header(
-                    title: "Devices",
-                    subtitle: "Choose the display each physical pointing device belongs to."
-                )
-                Spacer()
-                Button("Apply Recommended") {
-                    engine.applyRecommendedSetup()
-                }
-                .controlSize(.small)
-                .disabled(engine.connectedDevices.isEmpty)
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "info.circle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Brand.accent)
+                Text("The last position wins. Assignments apply the first time, after a reset, or when a display disconnects.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Brand.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-
-            Text("The last cursor position always wins. The display assignment is used the first time a device is used, after resetting its position, or when its previous display is disconnected.")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            .padding(13)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Brand.accent.opacity(0.07))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(Brand.accent.opacity(0.16), lineWidth: 1)
+            )
 
             if engine.devices.isEmpty {
-                SettingsCard {
+                GlassCard {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("No pointing devices found")
                             .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Brand.textPrimary)
                         Text("Grant Input Monitoring, then use “Check Again” on the General tab.")
                             .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Brand.textSecondary)
                     }
                 }
             } else {
-                VStack(spacing: 8) {
+                VStack(spacing: 9) {
                     ForEach(engine.devices) { device in
                         DeviceSettingsRow(engine: engine, device: device)
                     }
                 }
             }
 
-            SettingsCard(
+            GlassCard(
                 title: "Displays",
-                subtitle: "Detected automatically. Arrangement, scaling and disconnection are handled live."
+                subtitle: "Updates automatically when displays change.",
+                symbol: "display.2"
             ) {
-                if engine.displays.isEmpty {
-                    Text("No active displays.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(engine.displays) { display in
-                        HStack(spacing: 10) {
-                            Image(systemName: display.isBuiltIn ? "laptopcomputer" : "display")
-                                .font(.system(size: 13))
-                                .foregroundStyle(Brand.accent)
-                                .frame(width: 20)
-                            VStack(alignment: .leading, spacing: 1) {
-                                HStack(spacing: 5) {
-                                    Text(display.name)
-                                        .font(.system(size: 12, weight: .medium))
-                                    if display.isMain {
-                                        tag("Main")
+                DisplayMap(
+                    displays: engine.displays,
+                    activeDisplayID: engine.activeDevice?.assignment.displayUUID
+                )
+
+                if !engine.displays.isEmpty {
+                    VStack(spacing: 0) {
+                        ForEach(Array(engine.displays.enumerated()), id: \.element.id) { index, display in
+                            if index > 0 { DividerLine() }
+                            HStack(spacing: 10) {
+                                Image(systemName: display.isBuiltIn ? "laptopcomputer" : "display")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(Brand.accent)
+                                    .frame(width: 20)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    HStack(spacing: 5) {
+                                        Text(display.name)
+                                            .font(.system(size: 11.5, weight: .medium))
+                                            .foregroundStyle(Brand.textPrimary)
+                                        if display.isMain { PillTag(text: "Main") }
+                                        if display.isBuiltIn { PillTag(text: "Built-in", color: Brand.cyan) }
                                     }
-                                    if display.isBuiltIn {
-                                        tag("Built-in")
-                                    }
+                                    Text(display.resolutionLabel + (display.scale > 1 ? " · @\(Int(display.scale))×" : ""))
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(Brand.textTertiary)
                                 }
-                                Text("\(display.detailLabel) · \(Int(display.bounds.width)) × \(Int(display.bounds.height)) pt")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
+                                Spacer(minLength: 0)
                             }
-                            Spacer()
+                            .padding(.vertical, 9)
                         }
-                        .padding(.vertical, 3)
                     }
                 }
             }
@@ -373,23 +517,28 @@ private struct DevicesSettingsTab: View {
                 Button("Reset All Saved Positions") {
                     engine.resetAllPositions()
                 }
-                .controlSize(.small)
+                .buttonStyle(SecondaryButtonStyle(compact: true))
                 Spacer()
                 Text("\(engine.managedDevices.count) of \(engine.connectedDevices.count) connected devices managed")
                     .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Brand.textTertiary)
+            }
+
+            let disconnected = engine.devices.filter { !$0.isConnected }
+            if !disconnected.isEmpty {
+                GlassCard(
+                    title: "Previously seen",
+                    subtitle: "Keeps settings for the next connection.",
+                    symbol: "clock.arrow.circlepath"
+                ) {
+                    VStack(spacing: 8) {
+                        ForEach(disconnected) { device in
+                            DeviceSettingsRow(engine: engine, device: device)
+                        }
+                    }
+                }
             }
         }
-    }
-
-    private func tag(_ text: String) -> some View {
-        Text(text.uppercased())
-            .font(.system(size: 8, weight: .bold))
-            .tracking(0.4)
-            .foregroundStyle(Brand.accent)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(Capsule().fill(Brand.accent.opacity(0.12)))
     }
 }
 
@@ -398,212 +547,249 @@ private struct DeviceSettingsRow: View {
     let device: PointingDevice
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(device.isActive ? Brand.accent.opacity(0.16) : Color.primary.opacity(0.055))
-                    .frame(width: 36, height: 36)
-                Image(systemName: device.kind.symbol)
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(device.isActive ? Brand.accent : .secondary)
-            }
-            .opacity(device.isConnected ? 1 : 0.55)
+        HoverCard(active: device.isActive, cornerRadius: 16) {
+            HStack(spacing: 12) {
+                DeviceGlyph(symbol: device.kind.symbol, active: device.isActive, size: 40)
+                    .opacity(device.isConnected ? 1 : 0.55)
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(device.name)
-                        .font(.system(size: 12, weight: .semibold))
-                        .lineLimit(1)
-                    if device.isActive {
-                        Text("ACTIVE")
-                            .font(.system(size: 8, weight: .bold))
-                            .tracking(0.4)
-                            .foregroundStyle(Brand.success)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(Capsule().fill(Brand.success.opacity(0.12)))
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(device.name)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Brand.textPrimary)
+                            .lineLimit(1)
+                        if !device.isEnabled { PillTag(text: "Off", color: Brand.textTertiary) }
                     }
-                }
-                HStack(spacing: 6) {
                     Text(device.connectionLabel)
-                    if !device.identityDescription.isEmpty {
-                        Text("·")
-                        Text(device.identityDescription)
-                    }
+                        .font(.system(size: 10))
+                        .foregroundStyle(Brand.textTertiary)
+                        .lineLimit(1)
+                        .help(device.identityDescription)
                 }
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                if device.hasSavedPosition && device.isConnected {
+                    Image(systemName: "mappin.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Brand.accent.opacity(0.70))
+                        .help("A saved cursor position exists for this device")
+                }
+
+                Toggle("", isOn: Binding(
+                    get: { device.isEnabled },
+                    set: { engine.setEnabled(deviceID: device.id, enabled: $0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .tint(Brand.accent)
+                .controlSize(.mini)
+                .disabled(!device.isConnected)
+                .help(device.isEnabled ? "Disable this device" : "Enable this device")
+
+                AssignmentMenu(engine: engine, device: device)
+
+                deviceMenu
             }
-
-            Spacer(minLength: 8)
-
-            if device.hasSavedPosition && device.isConnected {
-                Image(systemName: "mappin.circle.fill")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Brand.accent.opacity(0.65))
-                    .help("A saved cursor position exists for this device")
-            }
-
-            Toggle("", isOn: Binding(
-                get: { device.isEnabled },
-                set: { engine.setEnabled(deviceID: device.id, enabled: $0) }
-            ))
-            .labelsHidden()
-            .toggleStyle(.switch)
-            .controlSize(.mini)
-            .disabled(!device.isConnected)
-            .help(device.isEnabled ? "Disable this device" : "Enable this device")
-
-            AssignmentMenu(engine: engine, device: device)
-                .frame(minWidth: 120, alignment: .trailing)
-
-            Menu {
-                Button("Move Cursor Now") {
-                    engine.activate(deviceID: device.id)
-                }
-                .disabled(!device.isConnected || !device.isEnabled || (!device.isManaged && !device.hasSavedPosition))
-
-                Button("Reset Saved Position") {
-                    engine.resetPosition(deviceID: device.id)
-                }
-                .disabled(!device.hasSavedPosition)
-
-                if !device.isConnected {
-                    Divider()
-                    Button("Forget Device", role: .destructive) {
-                        engine.forgetDevice(deviceID: device.id)
-                    }
-                }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
         }
-        .padding(.horizontal, 13)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(device.isActive ? Brand.accent.opacity(0.35) : Color.primary.opacity(0.07))
-        )
-        .opacity(device.isConnected ? 1 : 0.7)
+        .opacity(device.isConnected ? 1 : 0.72)
+    }
+
+    private var deviceMenu: some View {
+        Menu {
+            Button("Move Cursor Now") {
+                engine.activate(deviceID: device.id)
+            }
+            .disabled(!device.isConnected || !device.isEnabled || (!device.isManaged && !device.hasSavedPosition))
+
+            Button("Reset Saved Position") {
+                engine.resetPosition(deviceID: device.id)
+            }
+            .disabled(!device.hasSavedPosition)
+
+            if !device.isConnected {
+                Divider()
+                Button("Forget Device", role: .destructive) {
+                    engine.forgetDevice(deviceID: device.id)
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Brand.textSecondary)
+                .frame(width: 28, height: 28)
+                .background(Circle().fill(Color.white.opacity(0.06)))
+                .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
     }
 }
 
 // MARK: - Activity
 
+@MainActor
+private final class ActivityFilterStore: ObservableObject {
+    enum Filter: String, CaseIterable, Identifiable {
+        case all = "All"
+        case switches = "Switches"
+        case devices = "Devices"
+        case system = "System"
+
+        var id: String { rawValue }
+    }
+
+    @Published var filter: Filter = .all
+
+    func matches(_ entry: DiagnosticEntry) -> Bool {
+        switch filter {
+        case .all:
+            return true
+        case .switches:
+            return entry.category == "Switch"
+        case .devices:
+            return entry.category == "Devices" || entry.category == "Display"
+        case .system:
+            return !["Switch", "Devices", "Display"].contains(entry.category)
+        }
+    }
+}
+
 private struct ActivitySettingsTab: View {
+    @ObservedObject var model: AppModel
     @ObservedObject var engine: DualPointEngine
+    @StateObject private var filters = ActivityFilterStore()
+
+    private var entries: [DiagnosticEntry] {
+        engine.log.entries.filter(filters.matches).suffix(250).map { $0 }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            header(
-                title: "Activity",
-                subtitle: "A record of switches, devices and display changes. No movement data or keystrokes."
-            )
-
             if let lastSwitch = engine.lastSwitch {
-                SettingsCard(title: "Last switch") {
-                    HStack(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 2) {
+                GlassCard(title: "Last switch", symbol: "arrow.left.arrow.right") {
+                    HStack(spacing: 13) {
+                        DeviceGlyph(symbol: "cursorarrow", active: true, size: 42)
+                        VStack(alignment: .leading, spacing: 3) {
                             Text(lastSwitch.deviceName)
-                                .font(.system(size: 14, weight: .semibold))
+                                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                                .foregroundStyle(Brand.textPrimary)
                             Text(lastSwitch.at.formatted(date: .omitted, time: .standard))
                                 .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Brand.textSecondary)
                         }
-                        Spacer()
+                        Spacer(minLength: 8)
                         if lastSwitch.wasWarped {
-                            Label("Cursor restored", systemImage: "arrow.left.arrow.right")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(Brand.accent)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(Capsule().fill(Brand.accent.opacity(0.12)))
-                        }
-                        if let point = lastSwitch.restoredPoint {
-                            Text(String(format: "(%.0f, %.0f)", point.x, point.y))
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(.secondary)
+                            PillTag(text: "Restored", color: Brand.accent)
                         }
                     }
                 }
             }
 
-            SettingsCard(
-                title: "Log",
-                subtitle: "Also written to \(engine.log.fileURL.path)"
+            GlassCard(
+                title: "Activity log",
+                symbol: "waveform.path.ecg"
             ) {
-                LogListView(log: engine.log)
-                    .frame(height: 260)
+                HStack(spacing: 6) {
+                    ForEach(ActivityFilterStore.Filter.allCases) { filter in
+                        FilterChip(
+                            title: filter.rawValue,
+                            selected: filters.filter == filter
+                        ) {
+                            filters.filter = filter
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    Text("\(entries.count) entries")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Brand.textTertiary)
+                }
+
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        if entries.isEmpty {
+                            Text("No activity recorded yet.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(Brand.textTertiary)
+                                .padding(10)
+                        } else {
+                            ForEach(entries) { entry in
+                                LogLineView(entry: entry)
+                            }
+                        }
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(height: 300)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.black.opacity(0.26))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.07), lineWidth: 1)
+                )
 
                 HStack(spacing: 8) {
                     Button("Clear") { engine.log.clear() }
+                        .buttonStyle(GhostButtonStyle(compact: true))
                     Button("Copy") {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(engine.log.recentText(limit: 250), forType: .string)
                     }
+                    .buttonStyle(SecondaryButtonStyle(compact: true))
                     Button("Reveal Log") {
                         NSWorkspace.shared.activateFileViewerSelecting([engine.log.fileURL])
                     }
-                    Spacer()
-                    Text("\(engine.log.entries.count) entries")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
+                    .buttonStyle(GhostButtonStyle(compact: true))
+                    Button("Saved State") {
+                        model.revealStateFile()
+                    }
+                    .buttonStyle(GhostButtonStyle(compact: true))
+                    Spacer(minLength: 0)
                 }
-                .controlSize(.small)
-            }
-
-            HStack {
-                Button("Copy Diagnostics") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(engine.log.recentText(limit: 250), forType: .string)
-                }
-                .controlSize(.small)
-                Spacer()
             }
         }
     }
 }
 
-private struct LogListView: View {
-    @ObservedObject var log: DiagnosticLog
+private struct FilterChip: View {
+    let title: String
+    let selected: Bool
+    let action: () -> Void
+
+    @StateObject private var hover = HoverStore()
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 2) {
-                if log.entries.isEmpty {
-                    Text("No activity recorded yet.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .padding(8)
-                } else {
-                    ForEach(log.entries.suffix(250)) { entry in
-                        Text(entry.line)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-            }
-            .padding(8)
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 10.5, weight: selected ? .semibold : .medium))
+                .foregroundStyle(selected ? Color.white : Brand.textSecondary)
+                .padding(.horizontal, 10)
+                .frame(height: 25)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(
+                            selected
+                                ? AnyShapeStyle(Brand.accent.opacity(0.30))
+                                : AnyShapeStyle(Color.white.opacity(hover.isHovering ? 0.09 : 0.055))
+                        )
+                )
+                .overlay(
+                    Capsule(style: .continuous)
+                        .strokeBorder(
+                            selected ? Brand.accent.opacity(0.48) : Color.white.opacity(0.09),
+                            lineWidth: 1
+                        )
+                )
+                .contentShape(Capsule(style: .continuous))
         }
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color(nsColor: .textBackgroundColor).opacity(0.65))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08))
-        )
+        .buttonStyle(.plain)
+        .onHover { hover.isHovering = $0 }
+        .animation(.easeOut(duration: 0.14), value: hover.isHovering)
     }
 }
 
@@ -611,69 +797,73 @@ private struct LogListView: View {
 
 private struct AboutSettingsTab: View {
     var body: some View {
-        VStack(spacing: 18) {
-            Spacer(minLength: 10)
+        VStack(spacing: 20) {
+            VStack(spacing: 14) {
+                ZStack {
+                    Circle()
+                        .fill(Brand.accent.opacity(0.30))
+                        .frame(width: 150, height: 150)
+                        .blur(radius: 42)
+                    Circle()
+                        .strokeBorder(Color.white.opacity(0.07), lineWidth: 1)
+                        .frame(width: 152, height: 152)
+                    Circle()
+                        .strokeBorder(Color.white.opacity(0.045), lineWidth: 1)
+                        .frame(width: 194, height: 194)
+                    BrandIcon(size: 108, glow: true)
+                }
+                .frame(height: 200)
 
-            BrandIcon(size: 96)
-
-            VStack(spacing: 5) {
-                Text("DualPoint")
-                    .font(.system(size: 24, weight: .bold, design: .rounded))
-                Text("Version \(DualPointCore.version)")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                Text("Independent cursor positions for every pointing device.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-
-            StatusPill(text: "One real system cursor", color: Brand.accent)
-
-            SettingsCard {
-                VStack(alignment: .leading, spacing: 10) {
-                    aboutLine("cursorarrow.rays", "Each device keeps its own last cursor position.")
-                    aboutLine("display", "Assign devices to the built-in or any external display.")
-                    aboutLine("lock.shield", "No keystroke logging, no private APIs, no network access.")
-                    aboutLine("menubar.rectangle", "Lives in the menu bar with no Dock icon.")
+                VStack(spacing: 6) {
+                    Text("DualPoint")
+                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .foregroundStyle(Brand.textPrimary)
+                    Text("One cursor for every device.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Brand.textSecondary)
                 }
             }
-            .frame(maxWidth: 430)
+            .frame(maxWidth: .infinity)
 
-            Spacer()
+            GlassCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    aboutLine("cursorarrow.rays", "Each device keeps its own position.")
+                    aboutLine("display", "Assign devices to any display.")
+                    aboutLine("lock.shield", "No keystrokes or network access.")
+                    aboutLine("menubar.rectangle", "No Dock icon.")
+                }
+            }
+            .frame(maxWidth: 470)
 
-            Text("Copyright © 2026 DualPoint. All rights reserved.")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
-                .padding(.bottom, 4)
+            VStack(spacing: 9) {
+                Text("Version \(DualPointCore.version) · macOS 13 or later")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Brand.textTertiary)
+                Text("Copyright © 2026 DualPoint. All rights reserved.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Brand.textTertiary)
+            }
+            .padding(.bottom, 4)
         }
         .frame(maxWidth: .infinity)
+        .padding(.top, 10)
     }
 
     private func aboutLine(_ symbol: String, _ text: String) -> some View {
-        HStack(alignment: .top, spacing: 9) {
-            Image(systemName: symbol)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(Brand.accent)
-                .frame(width: 18)
+        HStack(alignment: .top, spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(Brand.accent.opacity(0.13))
+                    .frame(width: 26, height: 26)
+                Image(systemName: symbol)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Brand.accent)
+            }
             Text(text)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 11.5))
+                .foregroundStyle(Brand.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
-    }
-}
-
-// MARK: - Shared header
-
-private func header(title: String, subtitle: String) -> some View {
-    VStack(alignment: .leading, spacing: 3) {
-        Text(title)
-            .font(.system(size: 20, weight: .bold, design: .rounded))
-        Text(subtitle)
-            .font(.system(size: 11))
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
     }
 }

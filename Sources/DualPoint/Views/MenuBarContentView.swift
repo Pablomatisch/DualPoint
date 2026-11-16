@@ -16,204 +16,245 @@ struct MenuBarContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider()
-
+            DividerLine()
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    if needsPermission {
-                        PermissionNotice(engine: engine)
-                    } else if !engine.hasCompletedOnboarding {
-                        setupNotice
-                    } else if !engine.isSwitchingEnabled {
-                        pausedNotice
+                VStack(alignment: .leading, spacing: 16) {
+                    notices
+
+                    SectionLabel(
+                        text: "Devices",
+                        trailing: connectedDevices.isEmpty ? nil : "\(connectedDevices.count) devices"
+                    )
+
+                    if connectedDevices.isEmpty {
+                        emptyDevices
+                    } else {
+                        VStack(spacing: 7) {
+                            ForEach(connectedDevices) { device in
+                                MenuDeviceRow(engine: engine, device: device)
+                            }
+                        }
                     }
 
-                    ActiveDeviceCard(engine: engine)
-
-                    deviceSection
-
-                    if engine.lastSwitch != nil {
-                        switchFootnote
-                    }
+                    deviceActions
                 }
-                .padding(12)
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+                .padding(.bottom, 18)
             }
-            .frame(minHeight: 220, maxHeight: 420)
+            .scrollIndicators(.hidden)
 
-            Divider()
             footer
         }
-        .frame(width: 360)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(width: PanelMetrics.contentWidth, height: PanelMetrics.contentHeight)
+        .background(PanelBackground(cornerRadius: PanelMetrics.cornerRadius))
     }
+
+    // MARK: - Header
 
     private var header: some View {
         HStack(spacing: 11) {
-            BrandIcon(size: 34)
+            BrandIcon(size: 38, glow: engine.isSwitchingEnabled)
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text("DualPoint")
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
-                StatusPill(text: engine.statusSummary, color: engine.statusColor)
-            }
+            Text("DualPoint")
+                .font(.system(size: 16, weight: .bold, design: .rounded))
+                .foregroundStyle(Brand.textPrimary)
 
-            Spacer()
+            Spacer(minLength: 6)
 
             Button {
                 model.openSettings()
             } label: {
                 Image(systemName: "gearshape.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(GlassIconButtonStyle(size: 32))
             .help("Open DualPoint Settings")
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(Brand.softGradient)
+        .padding(.horizontal, 20)
+        .padding(.top, 16)
+        .padding(.bottom, 13)
+        .background(
+            LinearGradient(
+                colors: [Brand.accent.opacity(0.06), .clear],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
     }
 
-    private var setupNotice: some View {
+    // MARK: - Notices
+
+    @ViewBuilder
+    private var notices: some View {
+        if needsPermission {
+            PermissionNotice(engine: engine, compact: true)
+        } else if !engine.hasCompletedOnboarding {
+            banner(
+                symbol: "wand.and.stars",
+                color: Brand.accent,
+                title: "Finish setting up DualPoint",
+                detail: "Choose a display for each device.",
+                actionTitle: "Continue"
+            ) {
+                model.openOnboarding()
+            }
+        } else if !engine.isSwitchingEnabled {
+            banner(
+                symbol: "pause.fill",
+                color: Brand.warning,
+                title: "Switching is paused",
+                detail: engine.statusSummary,
+                actionTitle: "Fix"
+            ) {
+                model.openSettings(tab: .general)
+            }
+        }
+    }
+
+    private func banner(
+        symbol: String,
+        color: Color,
+        title: String,
+        detail: String,
+        actionTitle: String,
+        action: @escaping () -> Void
+    ) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: "sparkles")
-                .foregroundStyle(Brand.accent)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Finish setting up DualPoint")
-                    .font(.system(size: 12, weight: .semibold))
-                Text("Choose a display for each device.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+            ZStack {
+                Circle()
+                    .fill(color.opacity(0.15))
+                    .frame(width: 28, height: 28)
+                Image(systemName: symbol)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(color)
             }
-            Spacer(minLength: 4)
-            Button("Continue") { model.openOnboarding() }
-                .controlSize(.small)
-        }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Brand.accent.opacity(0.10))
-        )
-    }
-
-    private var pausedNotice: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "pause.circle.fill")
-                .foregroundStyle(.secondary)
-            Text(engine.statusSummary)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            Spacer(minLength: 4)
-            Button("Fix") { model.openSettings(tab: .general) }
-                .controlSize(.small)
-        }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.primary.opacity(0.045))
-        )
-    }
-
-    private var deviceSection: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                Text("DEVICES")
-                    .font(.system(size: 10, weight: .bold))
-                    .tracking(0.8)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text("\(connectedDevices.count) connected")
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(Brand.textPrimary)
+                Text(detail)
                     .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-            }
-
-            if connectedDevices.isEmpty {
-                Text(needsPermission
-                     ? "Grant Input Monitoring to see connected devices."
-                     : "No pointing devices detected.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, 6)
-            } else {
-                ForEach(connectedDevices) { device in
-                    MenuDeviceRow(engine: engine, device: device)
-                }
-            }
-
-            HStack(spacing: 8) {
-                Button("Apply Recommended") {
-                    engine.applyRecommendedSetup()
-                }
-                .controlSize(.small)
-                .disabled(connectedDevices.isEmpty)
-
-                Button("Reset Positions") {
-                    engine.resetAllPositions()
-                }
-                .controlSize(.small)
-
-                Spacer()
-
-                Button("Manage…") {
-                    model.openSettings(tab: .devices)
-                }
-                .controlSize(.small)
-            }
-            .padding(.top, 3)
-        }
-    }
-
-    private var switchFootnote: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "clock.arrow.circlepath")
-                .font(.system(size: 9))
-            if let lastSwitch = engine.lastSwitch {
-                Text("Last switch \(lastSwitch.at, style: .relative) ago · \(lastSwitch.deviceName)")
+                    .foregroundStyle(Brand.textSecondary)
                     .lineLimit(1)
             }
-            Spacer()
+            Spacer(minLength: 4)
+            Button(actionTitle, action: action)
+                .buttonStyle(SecondaryButtonStyle(compact: true))
         }
-        .font(.system(size: 10))
-        .foregroundStyle(.tertiary)
+        .padding(11)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(color.opacity(0.075))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(color.opacity(0.20), lineWidth: 1)
+        )
     }
 
-    private var footer: some View {
-        VStack(spacing: 9) {
-            Toggle(isOn: Binding(
-                get: { engine.automaticSwitching },
-                set: { engine.setAutomaticSwitching($0) }
-            )) {
-                HStack(spacing: 6) {
-                    Image(systemName: "arrow.left.arrow.right")
-                        .font(.system(size: 10, weight: .semibold))
-                    Text("Automatic switching")
-                        .font(.system(size: 12))
-                }
-            }
-            .toggleStyle(.switch)
-            .controlSize(.mini)
+    // MARK: - Devices
 
+    private var emptyDevices: some View {
+        HStack(spacing: 10) {
+            Image(systemName: needsPermission ? "lock.fill" : "computermouse")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(Brand.textTertiary)
+            Text(needsPermission
+                 ? "Grant Input Monitoring to see connected devices."
+                 : "No pointing devices detected.")
+                .font(.system(size: 11))
+                .foregroundStyle(Brand.textSecondary)
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.white.opacity(0.035))
+        )
+    }
+
+    private var deviceActions: some View {
+        HStack(spacing: 8) {
+            Spacer(minLength: 0)
+
+            Button("Manage Devices") {
+                model.openSettings(tab: .devices)
+            }
+            .buttonStyle(SecondaryButtonStyle(compact: true))
+        }
+    }
+
+    // MARK: - Footer
+
+    private var footer: some View {
+        VStack(spacing: 11) {
             HStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(Brand.accent.opacity(0.14))
+                        .frame(width: 28, height: 28)
+                    Image(systemName: "arrow.left.arrow.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Brand.accent)
+                }
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Switch automatically")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(Brand.textPrimary)
+                }
+
+                Spacer(minLength: 4)
+
+                Toggle("", isOn: Binding(
+                    get: { engine.automaticSwitching },
+                    set: { engine.setAutomaticSwitching($0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .tint(Brand.accent)
+                .controlSize(.mini)
+            }
+
+            DividerLine()
+
+            HStack(spacing: 8) {
                 Button {
                     model.openSettings()
                 } label: {
-                    Label("Settings", systemImage: "gearshape")
+                    Label("Settings", systemImage: "slider.horizontal.3")
                 }
+                .buttonStyle(PrimaryButtonStyle(compact: true))
+
                 Button {
                     model.openOnboarding()
                 } label: {
                     Label("Setup", systemImage: "wand.and.stars")
                 }
-                Spacer()
-                Button("Quit") {
+                .buttonStyle(SecondaryButtonStyle(compact: true))
+
+                Spacer(minLength: 0)
+
+                Button {
                     model.quit()
+                } label: {
+                    Image(systemName: "power")
                 }
+                .buttonStyle(GlassIconButtonStyle(size: 30))
+                .help("Quit DualPoint")
             }
-            .controlSize(.small)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .padding(.horizontal, 20)
+        .padding(.top, 13)
+        .padding(.bottom, 15)
+        .background(
+            LinearGradient(
+                colors: [Color.black.opacity(0.10), Color.black.opacity(0.24)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+        .overlay(alignment: .top) { DividerLine() }
     }
 }
 
@@ -222,47 +263,34 @@ private struct MenuDeviceRow: View {
     let device: PointingDevice
 
     var body: some View {
-        HStack(spacing: 9) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(device.isActive ? Brand.accent.opacity(0.16) : Color.primary.opacity(0.055))
-                    .frame(width: 28, height: 28)
-                Image(systemName: device.kind.symbol)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(device.isActive ? Brand.accent : .secondary)
-            }
+        HoverCard(active: device.isActive, cornerRadius: 14) {
+            HStack(spacing: 10) {
+                DeviceGlyph(symbol: device.kind.symbol, active: device.isActive, size: 33)
 
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 5) {
-                    Text(device.name)
-                        .font(.system(size: 12, weight: .medium))
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(device.name)
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(Brand.textPrimary)
+                            .lineLimit(1)
+
+                        if !device.isEnabled {
+                            PillTag(text: "Off", color: Brand.textTertiary)
+                        }
+                    }
+
+                    Text(device.connectionLabel)
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(Brand.textTertiary)
                         .lineLimit(1)
-                    if device.isActive {
-                        Circle()
-                            .fill(Brand.success)
-                            .frame(width: 5, height: 5)
-                            .help("Currently active")
-                    }
-                    if !device.isEnabled {
-                        Text("Off")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    }
                 }
-                Text(device.connectionLabel)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+
+                Spacer(minLength: 4)
+
+                AssignmentMenu(engine: engine, device: device)
             }
-
-            Spacer(minLength: 4)
-
-            AssignmentMenu(engine: engine, device: device, compact: true)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
         }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(device.isActive ? Brand.accent.opacity(0.065) : Color.clear)
-        )
     }
 }

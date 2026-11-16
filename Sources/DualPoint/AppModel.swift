@@ -78,6 +78,7 @@ final class AppModel: ObservableObject {
     // MARK: - Windows
 
     func openSettings(tab: SettingsTab = .general) {
+        StatusItemController.shared.hide()
         settingsTab = tab
 
         if let controller = settingsWindowController, let window = controller.window {
@@ -89,20 +90,14 @@ final class AppModel: ObservableObject {
         let root = SettingsView(model: self, engine: engine)
             .environmentObject(self)
         let hosting = NSHostingController(rootView: root)
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
+        hosting.view.wantsLayer = true
+        let window = makeWindow(
+            title: "DualPoint Settings",
+            size: NSSize(width: 920, height: 640),
+            minSize: NSSize(width: 860, height: 600),
+            autosaveName: "DualPointSettingsWindow"
         )
-        window.title = "DualPoint Settings"
         window.contentViewController = hosting
-        window.minSize = NSSize(width: 760, height: 560)
-        window.setFrameAutosaveName("DualPointSettingsWindow")
-        window.isReleasedWhenClosed = false
-        window.tabbingMode = .disallowed
-        window.collectionBehavior.insert(.moveToActiveSpace)
-        window.center()
 
         let controller = NSWindowController(window: window)
         settingsWindowController = controller
@@ -112,6 +107,7 @@ final class AppModel: ObservableObject {
     }
 
     func openOnboarding() {
+        StatusItemController.shared.hide()
         if let controller = onboardingWindowController, let window = controller.window {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -125,19 +121,14 @@ final class AppModel: ObservableObject {
         )
         .environmentObject(self)
         let hosting = NSHostingController(rootView: root)
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 700),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
+        hosting.view.wantsLayer = true
+        let window = makeWindow(
+            title: "Welcome to DualPoint",
+            size: NSSize(width: 780, height: 760),
+            minSize: NSSize(width: 740, height: 700),
+            autosaveName: "DualPointOnboardingWindow"
         )
-        window.title = "Welcome to DualPoint"
         window.contentViewController = hosting
-        window.minSize = NSSize(width: 600, height: 640)
-        window.isReleasedWhenClosed = false
-        window.tabbingMode = .disallowed
-        window.collectionBehavior.insert(.moveToActiveSpace)
-        window.center()
 
         let controller = NSWindowController(window: window)
         onboardingWindowController = controller
@@ -146,7 +137,40 @@ final class AppModel: ObservableObject {
         window.makeKeyAndOrderFront(nil)
     }
 
+    /// A borderless-feeling window: transparent title bar, dark glass content
+    /// extending edge to edge, and the system traffic lights kept for closing.
+    private func makeWindow(
+        title: String,
+        size: NSSize,
+        minSize: NSSize,
+        autosaveName: String
+    ) -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = title
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.hasShadow = true
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.setContentSize(size)
+        window.minSize = minSize
+        window.setFrameAutosaveName(autosaveName)
+        window.isReleasedWhenClosed = false
+        window.tabbingMode = .disallowed
+        window.collectionBehavior.insert(.moveToActiveSpace)
+        window.center()
+        return window
+    }
+
     private func closeOnboarding() {
+        engine.setTestDriving(false)
         onboardingWindowController?.window?.close()
         onboardingWindowController = nil
     }
