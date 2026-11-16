@@ -365,6 +365,47 @@ enum PersistedStateTests {
             suite.check(settings.assignment.displayUUID == nil, "unmanaged by default")
             suite.check(settings.anchor == nil, "no anchor by default")
         }
+
+        suite.run("migrates settings to a new connection ID") {
+            var state = PersistedState()
+            state.update(deviceID: "hid:046d:c077:loc:1130000") { settings in
+                settings.assignment = DisplayAssignment(displayUUID: "dell", displayName: "DELL")
+                settings.anchor = CursorAnchor(displayUUID: "dell", x: 0.5, y: 0.5)
+                settings.lastKnownName = "USB Optical Mouse"
+                settings.lastKnownKind = .mouse
+            }
+
+            let migrated = state.migrateSettings(
+                from: "hid:046d:c077:loc:1130000",
+                to: "hid:046d:c077:loc:130000"
+            )
+            suite.check(migrated, "migration reported")
+            suite.check(state.devices["hid:046d:c077:loc:1130000"] == nil, "old key removed")
+            let settings = state.settings(for: "hid:046d:c077:loc:130000")
+            suite.equal(settings.assignment.displayUUID, "dell")
+            suite.check(settings.anchor != nil, "anchor moved")
+            suite.equal(settings.lastKnownName, "USB Optical Mouse")
+        }
+
+        suite.run("migration keeps the newer anchor and assignment") {
+            var state = PersistedState()
+            state.update(deviceID: "old") { settings in
+                settings.assignment = DisplayAssignment(displayUUID: "old-display")
+                settings.anchor = CursorAnchor(displayUUID: "old-display", x: 0.1, y: 0.1)
+            }
+            state.update(deviceID: "new") { settings in
+                settings.assignment = DisplayAssignment(displayUUID: "new-display")
+                settings.anchor = CursorAnchor(displayUUID: "new-display", x: 0.9, y: 0.9)
+            }
+
+            let migrated = state.migrateSettings(from: "old", to: "new")
+            suite.check(migrated, "migration reported")
+            let settings = state.settings(for: "new")
+            suite.equal(settings.assignment.displayUUID, "new-display")
+            suite.equal(settings.anchor?.x, 0.9)
+            suite.check(!state.migrateSettings(from: "missing", to: "new"), "missing source ignored")
+            suite.check(!state.migrateSettings(from: "new", to: "new"), "same identity ignored")
+        }
     }
 }
 

@@ -239,6 +239,28 @@ public struct PersistedState: Codable, Equatable {
         body(&settings)
         devices[deviceID] = settings
     }
+
+    /// Carries saved settings over when a device's identity key changes, for
+    /// example after moving a USB receiver to another port. The newer key's
+    /// own anchor wins; an assignment is only inherited when it has none.
+    @discardableResult
+    public mutating func migrateSettings(from previousID: String, to newID: String) -> Bool {
+        guard previousID != newID,
+              let previous = devices.removeValue(forKey: previousID) else {
+            return false
+        }
+        var current = devices[newID] ?? DeviceSettings()
+        if current.assignment.isUnmanaged {
+            current.assignment = previous.assignment
+        }
+        if current.anchor == nil {
+            current.anchor = previous.anchor
+        }
+        current.lastKnownName = current.lastKnownName ?? previous.lastKnownName
+        current.lastKnownKind = current.lastKnownKind ?? previous.lastKnownKind
+        devices[newID] = current
+        return true
+    }
 }
 
 // MARK: - Identity

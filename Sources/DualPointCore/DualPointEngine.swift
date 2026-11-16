@@ -480,12 +480,47 @@ public final class DualPointEngine: ObservableObject {
     // MARK: - HID devices
 
     private func handleDeviceAdded(_ info: HIDDeviceInfo) {
+        migrateStoredSettingsIfNeeded(for: info)
         connectedHID[info.key] = info
         if info.kind == .builtInTrackpad {
             markBuiltInTrackpadAvailable()
         }
         log.info("Devices", "Connected \(info.name) [\(info.key)]")
         rebuildDevices()
+    }
+
+    /// USB location IDs change when a device moves to another port or hub.
+    /// That produces a new identity key and would otherwise lose the display
+    /// assignment and saved position. When exactly one disconnected record
+    /// matches the same vendor/product, name and kind, carry its settings over
+    /// to the new key.
+    private func migrateStoredSettingsIfNeeded(for info: HIDDeviceInfo) {
+        guard !info.isBuiltIn,
+              info.kind == .mouse || info.kind == .trackpad || info.kind == .other else {
+            return
+        }
+
+        let prefix = String(format: "hid:%04x:%04x", info.vendorID ?? 0, info.productID ?? 0)
+        let candidates = store.state.devices.compactMap { id, settings -> String? in
+            guard id != info.key,
+                  id.hasPrefix(prefix),
+                  connectedHID[id] == nil,
+                  settings.lastKnownKind == info.kind,
+                  settings.lastKnownName == info.name else {
+                return nil
+            }
+            return id
+        }
+        guard candidates.count == 1, let previousID = candidates.first else { return }
+
+        var migrated = false
+        store.update { state in
+            migrated = state.migrateSettings(from: previousID, to: info.key)
+        }
+
+        if migrated {
+            log.info("Devices", "Moved saved settings for \(info.name) to its new connection [\(info.key)]")
+        }
     }
 
     private func handleDeviceRemoved(_ id: String) {
