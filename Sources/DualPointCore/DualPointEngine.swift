@@ -27,6 +27,7 @@ public final class DualPointEngine: ObservableObject {
     @Published public private(set) var isRunning = false
     @Published public private(set) var automaticSwitching: Bool
     @Published public private(set) var hasCompletedOnboarding: Bool
+    @Published public private(set) var isTestDriving = false
     @Published public private(set) var lastErrorMessage: String?
 
     private let displayManager = DisplayManager()
@@ -88,6 +89,7 @@ public final class DualPointEngine: ObservableObject {
         persistActiveAnchor(force: true)
         started = false
         isRunning = false
+        isTestDriving = false
         stopPermissionTimer()
         removeObservers()
 
@@ -116,7 +118,7 @@ public final class DualPointEngine: ObservableObject {
     public var isSwitchingEnabled: Bool {
         isRunning
             && automaticSwitching
-            && hasCompletedOnboarding
+            && (hasCompletedOnboarding || isTestDriving)
             && permissions.isReadyForAutomaticSwitching
             && isMonitoring
     }
@@ -139,7 +141,7 @@ public final class DualPointEngine: ObservableObject {
     }
 
     public var statusSummary: String {
-        if !hasCompletedOnboarding { return "Finish setup to enable switching" }
+        if !hasCompletedOnboarding && !isTestDriving { return "Finish setup to enable switching" }
         if !permissions.hidAccessGranted || !permissions.listenEventAccessGranted {
             return "Input Monitoring permission required"
         }
@@ -160,6 +162,15 @@ public final class DualPointEngine: ObservableObject {
         log.info("Settings", "Automatic switching \(enabled ? "enabled" : "disabled")")
     }
 
+    /// Lets the setup assistant's final step test the real handover before the
+    /// user commits to finishing setup.
+    public func setTestDriving(_ active: Bool) {
+        guard isTestDriving != active else { return }
+        isTestDriving = active
+        if !active { clearSwitchCandidate() }
+        log.info("Setup", active ? "Test drive started" : "Test drive stopped")
+    }
+
     public func setOnboardingCompleted(_ completed: Bool) {
         guard hasCompletedOnboarding != completed else { return }
         hasCompletedOnboarding = completed
@@ -175,6 +186,7 @@ public final class DualPointEngine: ObservableObject {
            connectedDevices.allSatisfy({ $0.assignment.isUnmanaged }) {
             _ = applyRecommendedSetup(quiet: true)
         }
+        setTestDriving(false)
         setOnboardingCompleted(true)
         lastLoggedPermissionKey = ""
         log.info("Setup", "Onboarding completed")
