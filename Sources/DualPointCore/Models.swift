@@ -211,23 +211,57 @@ public struct DeviceSettings: Codable, Equatable {
 }
 
 public struct PersistedState: Codable, Equatable {
-    public static let currentSchemaVersion = 1
+    public static let currentSchemaVersion = 2
 
     public var schemaVersion: Int
     public var automaticSwitching: Bool
     public var onboardingCompleted: Bool
+    /// Show a second, app-drawn cursor while two devices move at once.
+    public var interimCursorEnabled: Bool
+    /// Minimum seconds between automatic interim-cursor handovers.
+    public var handoverCooldown: TimeInterval
     public var devices: [String: DeviceSettings]
 
     public init(
         schemaVersion: Int = PersistedState.currentSchemaVersion,
         automaticSwitching: Bool = true,
         onboardingCompleted: Bool = false,
+        interimCursorEnabled: Bool = true,
+        handoverCooldown: TimeInterval = 0.8,
         devices: [String: DeviceSettings] = [:]
     ) {
         self.schemaVersion = schemaVersion
         self.automaticSwitching = automaticSwitching
         self.onboardingCompleted = onboardingCompleted
+        self.interimCursorEnabled = interimCursorEnabled
+        self.handoverCooldown = handoverCooldown
         self.devices = devices
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case automaticSwitching
+        case onboardingCompleted
+        case interimCursorEnabled
+        case handoverCooldown
+        case devices
+    }
+
+    /// Decodes older state files that predate the interim cursor settings.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion)
+            ?? PersistedState.currentSchemaVersion
+        automaticSwitching = try container.decodeIfPresent(Bool.self, forKey: .automaticSwitching)
+            ?? true
+        onboardingCompleted = try container.decodeIfPresent(Bool.self, forKey: .onboardingCompleted)
+            ?? false
+        interimCursorEnabled = try container.decodeIfPresent(Bool.self, forKey: .interimCursorEnabled)
+            ?? true
+        handoverCooldown = try container.decodeIfPresent(TimeInterval.self, forKey: .handoverCooldown)
+            ?? 0.8
+        devices = try container.decodeIfPresent([String: DeviceSettings].self, forKey: .devices)
+            ?? [:]
     }
 
     public func settings(for deviceID: String) -> DeviceSettings {

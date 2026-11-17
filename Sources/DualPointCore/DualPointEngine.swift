@@ -9,8 +9,12 @@ import AppKit
 /// A device "activates" when it sends movement, a button press or a real scroll.
 /// On activation DualPoint saves the previous device's last cursor position and
 /// restores the new device's position (or its assigned display on first use).
-/// Only one system cursor exists; activation moves it, it never draws a second
-/// one and never confines it to a display.
+///
+/// Only one *real* system cursor exists. When two devices move at the same time,
+/// the one that moved first keeps it and the other gets an app-drawn blue
+/// interim cursor. The interim device's events are consumed by the event tap so
+/// both devices can be positioned independently. When it settles, the real
+/// cursor takes over its position.
 @MainActor
 public final class DualPointEngine: ObservableObject {
     public let store: StateStore
@@ -19,6 +23,7 @@ public final class DualPointEngine: ObservableObject {
     @Published public private(set) var devices: [PointingDevice] = []
     @Published public private(set) var displays: [DisplayInfo] = []
     @Published public private(set) var activeDeviceID: String?
+    @Published public private(set) var interimDeviceID: String?
     @Published public private(set) var permissions = PermissionSnapshot()
     @Published public private(set) var isMonitoring = false
     @Published public private(set) var eventTapFailure: String?
@@ -28,7 +33,13 @@ public final class DualPointEngine: ObservableObject {
     @Published public private(set) var automaticSwitching: Bool
     @Published public private(set) var hasCompletedOnboarding: Bool
     @Published public private(set) var isTestDriving = false
+    @Published public private(set) var interimCursorEnabled: Bool
+    @Published public private(set) var handoverCooldown: TimeInterval
     @Published public private(set) var lastErrorMessage: String?
+
+    /// The app layer draws the interim cursor. It is intentionally not a
+    /// published property so a moving ghost does not invalidate SwiftUI views.
+    public var onInterimCursorChange: ((InterimCursor?) -> Void)?
 
     private let displayManager = DisplayManager()
     private let hidMonitor = HIDMonitor()
@@ -50,12 +61,26 @@ public final class DualPointEngine: ObservableObject {
     private var lastLoggedEventTapFailure: String?
     private var started = false
 
+    private var arbiter: InterimCursorArbiter
+    private var interimPoint: CGPoint?
+    private var interimTimer: Timer?
+    private var unmatchedStreak = 0
+    private var lastUnmatchedAt: UInt64 = 0
+    private var lastAccessibilityTrusted = false
+
     public init(store: StateStore? = nil, log: DiagnosticLog? = nil) {
         let resolvedStore = store ?? StateStore()
         self.store = resolvedStore
         self.log = log ?? DiagnosticLog()
+        let policy = InterimCursorPolicy(
+            isEnabled: resolvedStore.state.interimCursorEnabled,
+            handoverCooldown: resolvedStore.state.handoverCooldown
+        )
         self.automaticSwitching = resolvedStore.state.automaticSwitching
         self.hasCompletedOnboarding = resolvedStore.state.onboardingCompleted
+        self.interimCursorEnabled = policy.isEnabled
+        self.handoverCooldown = policy.handoverCooldown
+        self.arbiter = InterimCursorArbiter(policy: policy)
         configureCallbacks()
     }
 
@@ -87,6 +112,7 @@ public final class DualPointEngine: ObservableObject {
     public func stop() {
         guard started else { return }
         persistActiveAnchor(force: true)
+        hideInterimCursor(persist: true)
         started = false
         isRunning = false
         isTestDriving = false
@@ -100,6 +126,9 @@ public final class DualPointEngine: ObservableObject {
         connectedHID.removeAll()
         activityTable.clear()
         cachedActiveAnchor = nil
+        arbiter.reset()
+        lastAccessibilityTrusted = false
+        interimDeviceID = nil
         clearSwitchCandidate()
         isMonitoring = false
         rebuildDevices()
@@ -128,6 +157,27 @@ public final class DualPointEngine: ObservableObject {
         return devices.first { $0.id == activeDeviceID }
     }
 
+    public var interimDevice: PointingDevice? {
+        guard let interimDeviceID else { return nil }
+        return devices.first { $0.id == interimDeviceID }
+    }
+
+    /// Accessibility plus an active event tap is what allows the interim
+    /// device's movement to be consumed instead of steering the real cursor.
+    /// This ignores the user's on/off setting so the UI can describe the
+    /// permission itself.
+    public var canSuppressPointerEvents: Bool {
+        permissions.accessibilityTrusted && eventTap.canSuppressEvents
+    }
+
+    public var supportsInterimCursor: Bool {
+        interimCursorEnabled && canSuppressPointerEvents
+    }
+
+    private var canUseInterimCursor: Bool {
+        isSwitchingEnabled && supportsInterimCursor
+    }
+
     public func device(withID id: String) -> PointingDevice? {
         devices.first { $0.id == id }
     }
@@ -148,6 +198,7 @@ public final class DualPointEngine: ObservableObject {
         if !eventTap.state.isRunning { return "Pointer monitoring unavailable" }
         if !automaticSwitching { return "Automatic switching is off" }
         if managedDevices.isEmpty { return "Assign a device to a display" }
+        if let interimDevice { return "Interim: \(interimDevice.name)" }
         if let activeDevice { return "Active: \(activeDevice.name)" }
         return "Ready · waiting for input"
     }
@@ -157,9 +208,38 @@ public final class DualPointEngine: ObservableObject {
     public func setAutomaticSwitching(_ enabled: Bool) {
         guard automaticSwitching != enabled else { return }
         automaticSwitching = enabled
-        if !enabled { clearSwitchCandidate() }
+        if !enabled {
+            clearSwitchCandidate()
+            hideInterimCursor(persist: true)
+        }
         store.update { $0.automaticSwitching = enabled }
         log.info("Settings", "Automatic switching \(enabled ? "enabled" : "disabled")")
+    }
+
+    public func setInterimCursorEnabled(_ enabled: Bool) {
+        guard interimCursorEnabled != enabled else { return }
+        interimCursorEnabled = enabled
+        store.update { $0.interimCursorEnabled = enabled }
+        syncInterimPolicy()
+        if !enabled {
+            hideInterimCursor(persist: true)
+        }
+        log.info("Settings", "Interim cursor \(enabled ? "enabled" : "disabled")")
+    }
+
+    public func setHandoverCooldown(_ seconds: TimeInterval) {
+        let clamped = min(max(seconds, 0), 3)
+        guard abs(handoverCooldown - clamped) > 0.001 else { return }
+        handoverCooldown = clamped
+        store.update { $0.handoverCooldown = clamped }
+        syncInterimPolicy()
+    }
+
+    private func syncInterimPolicy() {
+        arbiter.policy = InterimCursorPolicy(
+            isEnabled: interimCursorEnabled,
+            handoverCooldown: handoverCooldown
+        )
     }
 
     /// Lets the setup assistant's final step test the real handover before the
@@ -167,13 +247,17 @@ public final class DualPointEngine: ObservableObject {
     public func setTestDriving(_ active: Bool) {
         guard isTestDriving != active else { return }
         isTestDriving = active
-        if !active { clearSwitchCandidate() }
+        if !active {
+            clearSwitchCandidate()
+            hideInterimCursor(persist: true)
+        }
         log.info("Setup", active ? "Test drive started" : "Test drive stopped")
     }
 
     public func setOnboardingCompleted(_ completed: Bool) {
         guard hasCompletedOnboarding != completed else { return }
         hasCompletedOnboarding = completed
+        if !completed { hideInterimCursor(persist: true) }
         store.update { $0.onboardingCompleted = completed }
     }
 
@@ -248,10 +332,17 @@ public final class DualPointEngine: ObservableObject {
     }
 
     public func setEnabled(deviceID: String, enabled: Bool) {
-        if !enabled, activeDeviceID == deviceID {
-            persistActiveAnchor(force: true)
-            activeDeviceID = nil
-            cachedActiveAnchor = nil
+        if !enabled {
+            if interimDeviceID == deviceID {
+                hideInterimCursor(persist: true)
+            }
+            if activeDeviceID == deviceID {
+                persistActiveAnchor(force: true)
+                activeDeviceID = nil
+                cachedActiveAnchor = nil
+                arbiter.setMain(nil)
+                hideInterimCursor(persist: true)
+            }
         }
         store.update { state in
             state.update(deviceID: deviceID) { $0.isEnabled = enabled }
@@ -273,6 +364,9 @@ public final class DualPointEngine: ObservableObject {
     }
 
     public func resetPosition(deviceID: String) {
+        if interimDeviceID == deviceID {
+            hideInterimCursor(persist: false)
+        }
         store.update { state in
             state.update(deviceID: deviceID) { $0.anchor = nil }
         }
@@ -296,10 +390,15 @@ public final class DualPointEngine: ObservableObject {
 
     public func forgetDevice(deviceID: String) {
         guard connectedHID[deviceID] == nil else { return }
+        if interimDeviceID == deviceID {
+            hideInterimCursor(persist: false)
+        }
         store.update { $0.devices.removeValue(forKey: deviceID) }
         if activeDeviceID == deviceID {
             activeDeviceID = nil
             cachedActiveAnchor = nil
+            arbiter.setMain(nil)
+            hideInterimCursor(persist: false)
         }
         rebuildDevices()
         log.info("Devices", "Removed saved settings for \(deviceID)")
@@ -364,7 +463,7 @@ public final class DualPointEngine: ObservableObject {
         }
 
         eventTap.onPointerEvent = { [weak self] event in
-            self?.handlePointerEvent(event)
+            self?.handlePointerEvent(event) ?? .pass
         }
         eventTap.onStateChange = { [weak self] state in
             self?.handleEventTapState(state)
@@ -416,10 +515,23 @@ public final class DualPointEngine: ObservableObject {
             eventTap.start()
         }
 
+        // An active tap can only suppress events with Accessibility. Restart
+        // once when the permission is granted so the interim cursor starts
+        // working without relaunching DualPoint.
+        let accessibilityTrusted = snapshot.accessibilityTrusted
+        if accessibilityTrusted, !lastAccessibilityTrusted,
+           eventTap.state.isRunning, !eventTap.canSuppressEvents {
+            eventTap.restart()
+        }
+        lastAccessibilityTrusted = accessibilityTrusted
+
         snapshot = PermissionCenter.snapshot(eventTapAvailable: eventTap.state.isRunning)
         permissions = snapshot
         eventTapFailure = eventTap.state.failureReason
         isMonitoring = hidMonitor.isOpen && eventTap.state.isRunning
+        if !isSwitchingEnabled {
+            hideInterimCursor(persist: true)
+        }
         rebuildDevices()
 
         let permissionKey = [
@@ -441,10 +553,12 @@ public final class DualPointEngine: ObservableObject {
     }
 
     private func teardownHIDMonitorForPermissionLoss() {
+        hideInterimCursor(persist: true)
         if let activeDeviceID, activeDeviceID != DeviceIdentity.builtInTrackpadID {
             persistActiveAnchor(force: true)
             self.activeDeviceID = nil
             cachedActiveAnchor = nil
+            arbiter.setMain(nil)
         }
         hidMonitor.stop()
         connectedHID.removeAll()
@@ -463,12 +577,13 @@ public final class DualPointEngine: ObservableObject {
             log.info("EventTap", "Pointer event tap running")
             lastLoggedEventTapFailure = nil
         case .failed(let reason):
+            hideInterimCursor(persist: true)
             if lastLoggedEventTapFailure != reason {
                 lastLoggedEventTapFailure = reason
                 log.error("EventTap", reason)
             }
         case .stopped:
-            break
+            hideInterimCursor(persist: true)
         }
     }
 
@@ -539,10 +654,17 @@ public final class DualPointEngine: ObservableObject {
         guard connectedHID.removeValue(forKey: id) != nil else { return }
         activityTable.remove(deviceID: id)
 
+        if interimDeviceID == id {
+            hideInterimCursor(persist: true)
+            log.info("Interim", "Interim device disconnected: \(id)")
+        }
+
         if activeDeviceID == id {
             persistActiveAnchor(force: true)
             activeDeviceID = nil
             cachedActiveAnchor = nil
+            arbiter.setMain(nil)
+            hideInterimCursor(persist: true)
             log.info("Devices", "Active device disconnected: \(id)")
         } else {
             log.info("Devices", "Disconnected \(id)")
@@ -557,6 +679,7 @@ public final class DualPointEngine: ObservableObject {
     }
 
     private func handleDisplayChange(_ newDisplays: [DisplayInfo]) {
+        hideInterimCursor(persist: true)
         displays = newDisplays
         rebuildDevices()
 
@@ -599,9 +722,34 @@ public final class DualPointEngine: ObservableObject {
 
         guard connectedHID[activity.deviceID] != nil else { return }
         guard activity.isMovement || activity.isButtonPress else { return }
+
+        let now = Clock.nowNanoseconds()
         if activity.isMovement {
-            lastHIDMovementAt = Clock.nowNanoseconds()
+            lastHIDMovementAt = now
+            arbiter.noteMovement(activity.deviceID, at: now)
+
+            if activity.deviceID != activeDeviceID {
+                // While the interim cursor is visible, only the pointer event
+                // may commit it. HID activity must not steal the handover and
+                // warp the real cursor to a different saved position first.
+                let interimExists = arbiter.interimDeviceID != nil
+                if interimExists || canUseInterimCursor {
+                    if interimExists
+                        || arbiter.canStartInterim(for: activity.deviceID, at: now) {
+                        clearSwitchCandidate()
+                        return
+                    }
+                }
+            }
+        } else if activity.isButtonPress,
+                  arbiter.interimDeviceID != nil,
+                  activity.deviceID != activeDeviceID {
+            // A button press is handled by the event tap so the click lands at
+            // the interim cursor's position.
+            clearSwitchCandidate()
+            return
         }
+
         noteInteraction(
             deviceID: activity.deviceID,
             isButtonPress: activity.isButtonPress,
@@ -609,57 +757,293 @@ public final class DualPointEngine: ObservableObject {
         )
     }
 
-    private func handlePointerEvent(_ event: PointerEvent) {
-        guard isRunning, event.isMeaningfulActivity else { return }
+    private func handlePointerEvent(_ event: PointerEvent) -> PointerEventDecision {
+        guard isRunning, event.isMeaningfulActivity else { return .pass }
+        let now = Clock.nowNanoseconds()
 
+        let deviceID: String
+        let isInferredBuiltIn: Bool
         if let entry = activityTable.device(forEventAt: event.timestamp),
            connectedHID[entry.deviceID] != nil {
-            if activeDeviceID == entry.deviceID {
-                captureActiveAnchor(at: event.location, eventTimestamp: event.timestamp)
-            } else {
-                let result = noteInteraction(
-                    deviceID: entry.deviceID,
-                    isButtonPress: event.isButtonDown,
-                    source: "pointer"
-                )
-                if result.switched && !result.didWarp {
-                    captureActiveAnchor(at: event.location, eventTimestamp: event.timestamp)
-                }
-            }
-            return
-        }
-
-        // No HID report explains this event. On Apple Silicon the built-in
-        // trackpad is a DriverKit event service, so this is its only signal.
-        //
-        // The HID callbacks and the event tap are independent delivery paths and
-        // not perfectly ordered. While an external device is demonstrably still
-        // streaming movement, an occasional unmatched event belongs to that
-        // device, not to the trackpad. Without this grace period the pointer
-        // can oscillate between two saved positions whenever one event misses
-        // its report.
-        guard builtInTrackpadAvailable else { return }
-        if !event.isButtonDown,
-           let activeID = activeDeviceID,
-           activeID != DeviceIdentity.builtInTrackpadID,
-           connectedHID[activeID] != nil,
-           Clock.nowNanoseconds() &- lastHIDMovementAt < 75_000_000 {
-            clearSwitchCandidate()
-            return
-        }
-
-        if activeDeviceID == DeviceIdentity.builtInTrackpadID {
-            captureActiveAnchor(at: event.location, eventTimestamp: event.timestamp)
+            deviceID = entry.deviceID
+            isInferredBuiltIn = false
+            unmatchedStreak = 0
         } else {
-            let result = noteInteraction(
-                deviceID: DeviceIdentity.builtInTrackpadID,
-                isButtonPress: event.isButtonDown,
-                source: "system pointer"
-            )
-            if result.switched && !result.didWarp {
+            // No HID report explains this event. On Apple Silicon the built-in
+            // trackpad is a DriverKit event service, so this is its only signal.
+            guard builtInTrackpadAvailable else { return .pass }
+            deviceID = DeviceIdentity.builtInTrackpadID
+            isInferredBuiltIn = true
+            recordUnmatchedEvent(at: now)
+        }
+
+        if event.isMovement {
+            arbiter.noteMovement(deviceID, at: now)
+        }
+
+        // 1. The interim device never steers the real cursor. Its movement
+        //    drives the blue overlay instead.
+        if arbiter.interimDeviceID == deviceID {
+            return handleInterimPointerEvent(event, deviceID: deviceID, now: now)
+        }
+
+        // 2. The HID callbacks and the event tap are independent delivery paths
+        //    and not perfectly ordered. While an external device is
+        //    demonstrably streaming, one unmatched event is almost certainly a
+        //    delayed report of that device. A sustained unmatched stream is the
+        //    built-in trackpad.
+        if isInferredBuiltIn,
+           shouldIgnoreIsolatedUnmatchedEvent(event: event) {
+            clearSwitchCandidate()
+            return .pass
+        }
+
+        // 3. The device that owns the real cursor: normal, untouched fast path.
+        if deviceID == activeDeviceID {
+            if event.isMovement {
                 captureActiveAnchor(at: event.location, eventTimestamp: event.timestamp)
             }
+            return .pass
         }
+
+        // 4. A second device moving while the first one is still moving gets the
+        //    interim cursor instead of stealing the real one.
+        if event.isMovement,
+           canUseInterimCursor,
+           arbiter.canStartInterim(for: deviceID, at: now),
+           let device = devices.first(where: { $0.id == deviceID }),
+           device.isManaged,
+           let start = CursorGeometry.restorePoint(
+               settings: store.state.settings(for: deviceID),
+               displays: displays
+           ) {
+            let point = CursorGeometry.movedPoint(
+                from: start,
+                by: CGSize(width: CGFloat(event.deltaX), height: CGFloat(event.deltaY)),
+                in: displays
+            )
+            beginInterimCursor(
+                deviceID: deviceID,
+                point: point,
+                reason: "both devices are moving"
+            )
+            return .consume
+        }
+
+        // 5. Normal single-device handover.
+        let result = noteInteraction(
+            deviceID: deviceID,
+            isButtonPress: event.isButtonDown,
+            source: isInferredBuiltIn ? "system pointer" : "pointer"
+        )
+        if result.switched && !result.didWarp {
+            captureActiveAnchor(at: event.location, eventTimestamp: event.timestamp)
+        }
+        return .pass
+    }
+
+    private func recordUnmatchedEvent(at now: UInt64) {
+        if now &- lastUnmatchedAt > 80_000_000 {
+            unmatchedStreak = 1
+        } else {
+            unmatchedStreak += 1
+        }
+        lastUnmatchedAt = now
+    }
+
+    private func shouldIgnoreIsolatedUnmatchedEvent(event: PointerEvent) -> Bool {
+        guard let activeID = activeDeviceID,
+              activeID != DeviceIdentity.builtInTrackpadID,
+              connectedHID[activeID] != nil,
+              Clock.nowNanoseconds() &- lastHIDMovementAt < 75_000_000 else {
+            return false
+        }
+        // Three or more consecutive unmatched events are a real trackpad
+        // stream, not a single report that lost the attribution race.
+        return unmatchedStreak < 3
+    }
+
+    private func handleInterimPointerEvent(
+        _ event: PointerEvent,
+        deviceID: String,
+        now: UInt64
+    ) -> PointerEventDecision {
+        guard canUseInterimCursor else {
+            hideInterimCursor(persist: true)
+            return .pass
+        }
+
+        if event.isMovement {
+            let start = interimPoint ?? CursorController.currentPosition()
+            let point = CursorGeometry.movedPoint(
+                from: start,
+                by: CGSize(width: CGFloat(event.deltaX), height: CGFloat(event.deltaY)),
+                in: displays
+            )
+            moveInterimCursor(to: point)
+            return .consume
+        }
+
+        if event.isButtonDown || event.isScroll {
+            guard let point = interimPoint else { return .pass }
+            // Clicking or scrolling with the interim device is an explicit
+            // commitment to its position, so it ends the interim state even
+            // during the cooldown.
+            adoptInterimCursor(
+                at: now,
+                reason: event.isButtonDown ? "button press" : "scroll"
+            )
+            return .passAt(point)
+        }
+
+        return .pass
+    }
+
+    // MARK: - Interim cursor
+
+    private func beginInterimCursor(deviceID: String, point: CGPoint, reason: String) {
+        guard canUseInterimCursor,
+              deviceID != activeDeviceID,
+              let device = devices.first(where: { $0.id == deviceID }),
+              device.isManaged else {
+            return
+        }
+        hideInterimCursor(persist: false, announce: false)
+        arbiter.startInterim(deviceID)
+        interimDeviceID = deviceID
+        interimPoint = point
+        startInterimTimer()
+        onInterimCursorChange?(InterimCursor(
+            deviceID: deviceID,
+            deviceName: device.name,
+            point: point
+        ))
+        log.info(
+            "Interim",
+            "\(device.name) shows an interim cursor at \(Self.format(point)); \(reason)"
+        )
+    }
+
+    private func moveInterimCursor(to point: CGPoint) {
+        guard let deviceID = arbiter.interimDeviceID else { return }
+        interimPoint = point
+        onInterimCursorChange?(InterimCursor(
+            deviceID: deviceID,
+            deviceName: deviceName(for: deviceID),
+            point: point
+        ))
+    }
+
+    private func hideInterimCursor(persist: Bool, announce: Bool = true) {
+        if persist,
+           let point = interimPoint,
+           let deviceID = arbiter.interimDeviceID,
+           let anchor = CursorGeometry.anchor(for: point, in: displays) {
+            self.persist(anchor: anchor, for: deviceID)
+        }
+        let wasActive = arbiter.interimDeviceID != nil || interimPoint != nil
+        arbiter.cancelInterim()
+        interimDeviceID = nil
+        interimPoint = nil
+        unmatchedStreak = 0
+        stopInterimTimer()
+        if announce && wasActive {
+            onInterimCursorChange?(nil)
+        }
+    }
+
+    private func startInterimTimer() {
+        guard interimTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.tickInterimCursor()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        interimTimer = timer
+    }
+
+    private func stopInterimTimer() {
+        interimTimer?.invalidate()
+        interimTimer = nil
+    }
+
+    private func tickInterimCursor() {
+        guard let deviceID = arbiter.interimDeviceID else {
+            stopInterimTimer()
+            return
+        }
+        guard isRunning, canUseInterimCursor else {
+            hideInterimCursor(persist: true)
+            return
+        }
+        if deviceID != DeviceIdentity.builtInTrackpadID,
+           connectedHID[deviceID] == nil {
+            hideInterimCursor(persist: false)
+            return
+        }
+        // Never move the real cursor in the middle of a drag.
+        guard !CursorController.isAnyButtonDown() else { return }
+        guard arbiter.canAdoptInterim(at: Clock.nowNanoseconds()) else { return }
+        adoptInterimCursor(at: Clock.nowNanoseconds(), reason: "settled")
+    }
+
+    private func adoptInterimCursor(at now: UInt64, reason: String) {
+        guard let interimID = arbiter.interimDeviceID,
+              let point = interimPoint else {
+            return
+        }
+
+        let outgoingID = activeDeviceID
+        let outgoingPoint = CursorController.currentPosition()
+        let outgoingRecentlyMoving = outgoingID.map {
+            arbiter.isRecentlyMoving($0, at: now)
+        } ?? false
+
+        if let outgoingID,
+           let outgoingAnchor = CursorGeometry.anchor(for: outgoingPoint, in: displays) {
+            persist(anchor: outgoingAnchor, for: outgoingID)
+        }
+        let interimAnchor = CursorGeometry.anchor(for: point, in: displays)
+        if let interimAnchor {
+            persist(anchor: interimAnchor, for: interimID)
+        }
+
+        let name = deviceName(for: interimID)
+        let didWarp = CursorController.warp(to: point)
+        anchorCaptureFloor = now
+        arbiter.adoptInterim(at: now)
+        activeDeviceID = interimID
+        cachedActiveAnchor = interimAnchor
+        clearSwitchCandidate()
+        hideInterimCursor(persist: false, announce: false)
+        rebuildDevices()
+
+        log.info(
+            "Interim",
+            "\(name) took over the real cursor at \(Self.format(point)) (\(reason))\(didWarp ? ", warped" : "")"
+        )
+
+        // If the previous main device is still moving, it becomes the new
+        // interim cursor at the position the real cursor just left. The
+        // cooldown then prevents an immediate second handover. Moving the same
+        // overlay there avoids a visible flash between the two cursors.
+        if let outgoingID, outgoingID != interimID, outgoingRecentlyMoving,
+           let outgoing = devices.first(where: { $0.id == outgoingID }),
+           outgoing.isManaged,
+           CursorGeometry.isPointOnAnyDisplay(outgoingPoint, displays: displays) {
+            beginInterimCursor(
+                deviceID: outgoingID,
+                point: outgoingPoint,
+                reason: "the previous main device is still moving"
+            )
+        } else {
+            onInterimCursorChange?(nil)
+        }
+    }
+
+    private static func format(_ point: CGPoint) -> String {
+        String(format: "(%.0f, %.0f)", point.x, point.y)
     }
 
     @discardableResult
@@ -715,7 +1099,9 @@ public final class DualPointEngine: ObservableObject {
         clearSwitchCandidate()
         persistActiveAnchor(force: true)
         activeDeviceID = deviceID
+        arbiter.setMain(deviceID)
         cachedActiveAnchor = nil
+        hideInterimCursor(persist: true)
         rebuildDevices()
         log.info("Engine", "Activity from \(device.name) via \(source); switching is paused")
         return (false, false)
@@ -730,8 +1116,10 @@ public final class DualPointEngine: ObservableObject {
     private func performSwitch(to device: PointingDevice, source: String) -> Bool {
         let outgoing = activeDevice
         persistActiveAnchor(force: true)
+        hideInterimCursor(persist: true)
 
         activeDeviceID = device.id
+        arbiter.setMain(device.id)
         cachedActiveAnchor = nil
         clearSwitchCandidate()
         var restoredPoint: CGPoint?

@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import AppKit
+import ApplicationServices
 
 public struct PointerEvent {
     public let type: CGEventType
@@ -63,12 +64,23 @@ public struct PointerEvent {
     }
 }
 
-/// A passive, listen-only CGEventTap.
+/// What the event tap should do with a pointer event.
+public enum PointerEventDecision: Equatable {
+    /// Deliver the event unchanged.
+    case pass
+    /// Drop the event. The pointer does not move and no app sees it.
+    case consume
+    /// Deliver the event at a corrected global location.
+    case passAt(CGPoint)
+}
+
+/// A CGEventTap that listens to pointer events.
 ///
-/// This is how DualPoint sees pointer events from devices that are not exposed
-/// as IOHIDDevices (notably the built-in trackpad). The tap never modifies or
-/// consumes events, so normal macOS behavior is preserved. It does not receive
-/// raw HID reports; those come from HIDMonitor.
+/// It is created as a passive, listen-only tap unless Accessibility is granted.
+/// With Accessibility it becomes an active tap, which lets DualPoint consume
+/// the movement of an interim device so that device no longer steers the real
+/// cursor. Single-device use always returns `.pass`; the tap only consumes
+/// events while a second cursor is actually visible.
 @MainActor
 public final class EventTapMonitor {
     public enum State: Equatable {
@@ -83,12 +95,26 @@ public final class EventTapMonitor {
         }
     }
 
-    public var onPointerEvent: ((PointerEvent) -> Void)?
+    public var onPointerEvent: ((PointerEvent) -> PointerEventDecision)?
     public var onStateChange: ((State) -> Void)?
 
     public private(set) var state: State = .stopped
+    /// True when the tap was created with Accessibility and can drop events.
+    public private(set) var canSuppressEvents = false
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
+
+    private static let eventMask = (1 << CGEventType.mouseMoved.rawValue)
+        | (1 << CGEventType.leftMouseDown.rawValue)
+        | (1 << CGEventType.leftMouseUp.rawValue)
+        | (1 << CGEventType.leftMouseDragged.rawValue)
+        | (1 << CGEventType.rightMouseDown.rawValue)
+        | (1 << CGEventType.rightMouseUp.rawValue)
+        | (1 << CGEventType.rightMouseDragged.rawValue)
+        | (1 << CGEventType.otherMouseDown.rawValue)
+        | (1 << CGEventType.otherMouseUp.rawValue)
+        | (1 << CGEventType.otherMouseDragged.rawValue)
+        | (1 << CGEventType.scrollWheel.rawValue)
 
     public init() {}
 
@@ -97,38 +123,38 @@ public final class EventTapMonitor {
         if state.isRunning { return true }
         stop()
 
-        let mask = (1 << CGEventType.mouseMoved.rawValue)
-            | (1 << CGEventType.leftMouseDown.rawValue)
-            | (1 << CGEventType.leftMouseUp.rawValue)
-            | (1 << CGEventType.leftMouseDragged.rawValue)
-            | (1 << CGEventType.rightMouseDown.rawValue)
-            | (1 << CGEventType.rightMouseUp.rawValue)
-            | (1 << CGEventType.rightMouseDragged.rawValue)
-            | (1 << CGEventType.otherMouseDown.rawValue)
-            | (1 << CGEventType.otherMouseUp.rawValue)
-            | (1 << CGEventType.otherMouseDragged.rawValue)
-            | (1 << CGEventType.scrollWheel.rawValue)
-
-        let context = Unmanaged.passUnretained(self).toOpaque()
-        guard let tap = CGEvent.tapCreate(
-            tap: .cghidEventTap,
-            place: .headInsertEventTap,
-            options: .listenOnly,
-            eventsOfInterest: CGEventMask(mask),
-            callback: pointerEventCallback,
-            userInfo: context
-        ) else {
+        let mask = CGEventMask(Self.eventMask)
+        let wantsActiveTap = AXIsProcessTrusted()
+        var created = wantsActiveTap
+            ? createTap(options: .defaultTap, mask: mask)
+            : nil
+        var isActive = created != nil
+        if created == nil {
+            created = createTap(options: .listenOnly, mask: mask)
+            isActive = false
+        }
+        guard let tap = created else {
             setState(.failed("macOS refused to create the input event tap. Input Monitoring or Accessibility permission is required."))
             return false
         }
 
         self.tap = tap
+        canSuppressEvents = isActive
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         self.source = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
         setState(.running)
         return true
+    }
+
+    /// Restarts a running tap so it picks up a newly granted Accessibility
+    /// permission. Called only on the false→true transition, so a refused
+    /// active tap is not retried in a loop.
+    public func restart() {
+        guard state.isRunning else { return }
+        stop()
+        start()
     }
 
     public func stop() {
@@ -143,6 +169,7 @@ public final class EventTapMonitor {
         }
         tap = nil
         source = nil
+        canSuppressEvents = false
         setState(.stopped)
     }
 
@@ -154,10 +181,22 @@ public final class EventTapMonitor {
         }
     }
 
-    fileprivate func handle(type: CGEventType, event: CGEvent) {
+    private func createTap(options: CGEventTapOptions, mask: CGEventMask) -> CFMachPort? {
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        return CGEvent.tapCreate(
+            tap: .cghidEventTap,
+            place: .headInsertEventTap,
+            options: options,
+            eventsOfInterest: mask,
+            callback: pointerEventCallback,
+            userInfo: context
+        )
+    }
+
+    fileprivate func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             reenable()
-            return
+            return Unmanaged.passUnretained(event)
         }
 
         let pointer = PointerEvent(
@@ -173,7 +212,18 @@ public final class EventTapMonitor {
             isMomentumScroll: event.getIntegerValueField(.scrollWheelEventMomentumPhase) != 0,
             isSynthetic: event.getIntegerValueField(.eventSourceUnixProcessID) != 0
         )
-        onPointerEvent?(pointer)
+
+        switch onPointerEvent?(pointer) ?? .pass {
+        case .pass:
+            return Unmanaged.passUnretained(event)
+        case .consume:
+            // A listen-only tap cannot drop events; never pretend it did.
+            return canSuppressEvents ? nil : Unmanaged.passUnretained(event)
+        case .passAt(let point):
+            guard canSuppressEvents else { return Unmanaged.passUnretained(event) }
+            event.location = point
+            return Unmanaged.passUnretained(event)
+        }
     }
 
     private func setState(_ newState: State) {
@@ -186,8 +236,7 @@ public final class EventTapMonitor {
 private let pointerEventCallback: CGEventTapCallBack = { _, type, event, context in
     guard let context else { return Unmanaged.passUnretained(event) }
     let monitor = Unmanaged<EventTapMonitor>.fromOpaque(context).takeUnretainedValue()
-    MainActor.assumeIsolated {
+    return MainActor.assumeIsolated {
         monitor.handle(type: type, event: event)
     }
-    return Unmanaged.passUnretained(event)
 }

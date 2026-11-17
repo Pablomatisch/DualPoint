@@ -73,6 +73,28 @@ public enum CursorGeometry {
         }
     }
 
+    /// Moves a point by a pointer delta and keeps it on real display content.
+    ///
+    /// Crossing into an adjacent display is allowed, exactly like the real
+    /// cursor. When the movement would leave the display into a gap or past the
+    /// outer edge, the point stops at that display's edge instead of floating in
+    /// invalid space.
+    public static func movedPoint(
+        from point: CGPoint,
+        by delta: CGSize,
+        in displays: [DisplayInfo],
+        inset: CGFloat = 2
+    ) -> CGPoint {
+        let candidate = CGPoint(x: point.x + delta.width, y: point.y + delta.height)
+        if isPointOnAnyDisplay(candidate, displays: displays) {
+            return candidate
+        }
+        guard let current = display(containing: point, in: displays) ?? nearestDisplay(to: point, in: displays) else {
+            return point
+        }
+        return clamped(candidate, to: current, inset: inset)
+    }
+
     /// Resolves the point to restore when a device becomes active.
     ///
     /// The device's actual last position wins, even if it was left on another

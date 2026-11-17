@@ -123,6 +123,7 @@ final class Runner {
 
         tap.onPointerEvent = { [weak self] event in
             self?.printEvent(event)
+            return .pass
         }
         tap.start()
 
@@ -158,6 +159,7 @@ final class Runner {
         tap.onStateChange = { print("Event tap: \($0)") }
         tap.onPointerEvent = { [weak self] event in
             self?.printEvent(event)
+            return .pass
         }
         tap.start()
 
