@@ -31,23 +31,22 @@ effect without a relaunch. “Check Again” in Settings forces an immediate ref
 
 ## Accessibility
 
-For **simultaneous cursors**, an external mouse or trackpad is isolated through
-raw HID: DualPoint opens it with `kIOHIDOptionsTypeSeizeDevice`, reads its X/Y
-counts and releases it when the blue pointer is handed over. That path is
-covered by Input Monitoring and does not need Accessibility.
+For **simultaneous cursors**, an external device is isolated through raw HID:
+DualPoint opens it with `kIOHIDOptionsTypeSeizeDevice`, reads its X/Y counts and
+releases it when the blue pointer is handed over. That path is covered by Input
+Monitoring and does not need Accessibility.
 
-Accessibility is required only for the **built-in trackpad fallback**. The
-trackpad is a DriverKit event service and cannot be seized. When it becomes the
-second device, DualPoint must:
+The built-in trackpad is a DriverKit event service and cannot be seized. It also
+cannot be isolated with a `CGEventTap`: returning `nil` from a tap hides a
+`mouseMoved` event from applications but does not stop the window server from
+moving the real cursor, so an unseizable device would move both pointers. The
+blue cursor is therefore limited to external devices, and the trackpad always
+owns the real cursor while a second device is active. This limitation is shared
+by DoubleMouse and is stated in the app.
 
-- Create an active `CGEventTap` (`.defaultTap`), which can drop events.
-- Consume the trackpad's movement so it no longer steers the real cursor.
-- Post clicks at the blue cursor position when that device is used.
-
-`AXIsProcessTrusted()` is the check. Without it, external devices still get an
-independent blue cursor, but the built-in trackpad cannot; both devices then
-share the real cursor. Nothing is consumed and no events are synthesized on the
-single-device path.
+`AXIsProcessTrusted()` still controls whether the pointer tap is active, which
+affects diagnostics only. With or without it, external devices get an independent
+blue cursor and single-device switching is unchanged.
 
 The permission is never used to read window contents, menus, keystrokes or
 clipboard data.

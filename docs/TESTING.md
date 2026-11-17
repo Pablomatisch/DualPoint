@@ -79,9 +79,11 @@ needed. Layout was checked for:
 | Trackpad → mouse handover | **Pending on the current build** |
 | Mouse → trackpad handover | **Pending on the current build** |
 | Simultaneous trackpad + mouse starts the blue interim cursor | **Pending on the current build** |
+| External mouse alone moves only the blue cursor, never the real one | **Pending on the current build** |
+| Trackpad alone moves only the real cursor, with no warps to the blue position or saves on the external display | **Pending on the current build** |
 | Interim device moves independently while the other keeps the real cursor | **Pending on the current build** |
-| Settle handover moves the real cursor to the blue position | **Pending on the current build** |
-| Handover delay slider changes the settle behavior | **Pending on the current build** |
+| Settle removes the blue pointer and saves its position to the external device without moving the real cursor | **Pending on the current build** |
+| Handover delay slider changes when the blue pointer is removed | **Pending on the current build** |
 | Click from the blue cursor lands at its position | **Pending on the current build** |
 | Single-device movement is unaffected | Verified in earlier builds; re-check on the current build |
 | Cursor over the menu bar / panel does not oscillate | **Pending on the current build** |
@@ -93,12 +95,29 @@ often the blue cursor appears when both devices move, and whether an unmatched
 trackpad event is labelled as mouse. Do not mark these rows as working from the
 automated suite alone.
 
-**Reported failure on the previous build:** the blue arrow was drawn larger than
-the system cursor, appeared only after the second device stopped, then followed
-only one physical device with an offset, and the two-pointer state never ended
-because the previous main device kept taking over the blue role. The redesign
-uses HID seizure for external devices, a system-sized tinted arrow and no role
-swap. These rows stay pending until the user confirms them on the real hardware.
+**Reported failure on a previous build:** the external mouse's vertical movement
+was inverted, the trackpad appeared to move both pointers, and it was unclear
+which device owned which cursor. Investigation showed two causes:
+
+1. Raw HID Y was flipped a second time when converting to Core Graphics; the
+   HID Y sign already matches CG's top-left origin.
+2. An interim cursor was allowed on the built-in trackpad through a
+   `CGEventTap`. Consuming a `mouseMoved` event hides it from apps but does not
+   stop the window server from moving the real cursor, so the trackpad moved both
+   pointers. The event-tap fallback was removed; only a seized external device
+   can own the blue cursor, and the real cursor keeps its owner after a handover.
+
+To verify the raw path independently, quit DualPoint and run
+`swift run DualPointDiagnose dual`. Move the external mouse up: `dy` must be
+negative and the derived Core Graphics `dy` must also be negative.
+
+For routing detail, set
+`defaults write com.dualpoint.DualPoint DualPointVerboseRouting -bool YES`,
+relaunch DualPoint, reproduce the problem, and inspect
+`~/Library/Logs/DualPoint/DualPoint.log` for `[Route]` lines. Disable with
+`defaults delete com.dualpoint.DualPoint DualPointVerboseRouting`.
+
+These rows stay pending until the user confirms them on real hardware.
 
 Rows marked *pending* must not be described as working until they are confirmed
 on real hardware.
@@ -115,11 +134,13 @@ Run the app from Terminal so it inherits the existing TCC grants:
 2. Move the trackpad to a spot on the built-in display. Pause.
 3. Move the mouse. The cursor should return to the mouse's own last position.
 4. Move the trackpad again. The cursor should return to the trackpad's spot.
-5. Confirm Input Monitoring is granted. Accessibility is needed only if the
-   built-in trackpad is the second device.
+5. Confirm Input Monitoring is granted. Accessibility is not needed for two
+   cursors.
 6. Move both devices at the same time. The device that moved first keeps the
-   real cursor; the other gets a blue arrow the same size as the system cursor,
-   at its own saved position.
+   real cursor. If the second device is an external mouse, it gets a blue arrow
+   the same size as the system cursor at its own saved position. The built-in
+   trackpad can never be the blue cursor; it always owns the real cursor while
+   the second pointer is active.
 7. Keep moving the second device. The blue arrow must follow only that device,
    with no visible offset from the real pointer's movement, while the first
    device keeps the real cursor.
@@ -165,10 +186,9 @@ weakness described in `docs/ARCHITECTURE.md`.
 
 ## Regression notes
 
-- Rebuilding an ad-hoc signed bundle can invalidate Input Monitoring and
-  Accessibility. If no devices appear, grant Input Monitoring again. External
-  devices then need no further permission; grant Accessibility only for the
-  built-in trackpad fallback.
+- Rebuilding an ad-hoc signed bundle can invalidate Input Monitoring. If no
+  devices appear, grant Input Monitoring again. External devices need no other
+  permission for the blue cursor; Accessibility is optional.
 - The debug snapshot build has no normal app lifecycle; its status text may read
   “Ready · waiting for input” even when the installed app is switching normally.
 - A rebuilt copy must be re-tested with the checklist above before a release.

@@ -53,10 +53,16 @@ public enum CursorController {
         return source
     }()
 
-    /// Delivers a click from the interim device at the blue pointer. Used only
-    /// after the device has been released and the real cursor handed over.
-    public static func click(at point: CGPoint, button: CGMouseButton, isPressed: Bool) {
-        guard let source = syntheticSource else { return }
+    /// Delivers one click half at the blue pointer. A CG mouse event carries
+    /// its own location, so the window server moves the real cursor there
+    /// briefly. Pass the main device's position as `returnPoint` to put it back
+    /// immediately, as DoubleMouse does.
+    public static func click(
+        at point: CGPoint,
+        button: CGMouseButton,
+        isPressed: Bool,
+        returningTo returnPoint: CGPoint? = nil
+    ) {
         let type: CGEventType
         switch (button, isPressed) {
         case (.left, true): type = .leftMouseDown
@@ -67,17 +73,30 @@ public enum CursorController {
         case (.center, false): type = .otherMouseUp
         default: type = isPressed ? .leftMouseDown : .leftMouseUp
         }
-        let event = CGEvent(
-            mouseEventSource: source,
-            mouseType: type,
-            mouseCursorPosition: point,
-            mouseButton: button
-        )
-        event?.post(tap: .cghidEventTap)
+        postMouseEvent(type, button: button, at: point, returningTo: returnPoint)
     }
 
-    /// Scrolls the window under the blue pointer without moving the real one.
-    public static func scroll(at point: CGPoint, horizontal: Int64, vertical: Int64) {
+    /// Synthesizes a left drag from the blue pointer while the real cursor is
+    /// restored to the main device after every event.
+    public static func beginDrag(at point: CGPoint, returningTo returnPoint: CGPoint) {
+        postMouseEvent(.leftMouseDown, button: .left, at: point, returningTo: returnPoint)
+    }
+
+    public static func drag(to point: CGPoint, returningTo returnPoint: CGPoint) {
+        postMouseEvent(.leftMouseDragged, button: .left, at: point, returningTo: returnPoint)
+    }
+
+    public static func endDrag(at point: CGPoint, returningTo returnPoint: CGPoint) {
+        postMouseEvent(.leftMouseUp, button: .left, at: point, returningTo: returnPoint)
+    }
+
+    /// Scrolls the window under the blue pointer and restores the real cursor.
+    public static func scroll(
+        at point: CGPoint,
+        horizontal: Int64,
+        vertical: Int64,
+        returningTo returnPoint: CGPoint? = nil
+    ) {
         guard let source = syntheticSource else { return }
         guard let event = CGEvent(
             scrollWheelEvent2Source: source,
@@ -89,5 +108,22 @@ public enum CursorController {
         ) else { return }
         event.location = point
         event.post(tap: .cghidEventTap)
+        if let returnPoint { _ = warp(to: returnPoint) }
+    }
+
+    private static func postMouseEvent(
+        _ type: CGEventType,
+        button: CGMouseButton,
+        at point: CGPoint,
+        returningTo returnPoint: CGPoint?
+    ) {
+        guard let source = syntheticSource else { return }
+        CGEvent(
+            mouseEventSource: source,
+            mouseType: type,
+            mouseCursorPosition: point,
+            mouseButton: button
+        )?.post(tap: .cghidEventTap)
+        if let returnPoint { _ = warp(to: returnPoint) }
     }
 }

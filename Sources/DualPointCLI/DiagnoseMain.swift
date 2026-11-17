@@ -1,6 +1,6 @@
 import Foundation
 import CoreGraphics
-import DualPointCore
+@preconcurrency import DualPointCore
 
 /// Diagnostic command line tool used to verify device identification,
 /// attribution and display geometry on real hardware.
@@ -9,6 +9,7 @@ import DualPointCore
 ///   DualPointDiagnose list      devices, displays and permissions
 ///   DualPointDiagnose watch     live device/display changes
 ///   DualPointDiagnose monitor   live HID reports and attributed pointer events
+///   DualPointDiagnose dual       seize the first external device and verify raw X/Y signs
 @main
 struct DualPointDiagnose {
     @MainActor
@@ -26,6 +27,8 @@ struct DualPointDiagnose {
             runner.watch()
         case "monitor":
             runner.monitor()
+        case "dual":
+            runner.dual()
         case "help", "--help", "-h":
             print("""
             DualPointDiagnose — hardware diagnostics for DualPoint
@@ -33,6 +36,8 @@ struct DualPointDiagnose {
               list      connected devices, displays and permissions
               watch     stream device and display changes
               monitor   stream HID activity and attributed pointer events
+              dual      seize the first external device and verify raw X/Y signs
+                        (quit DualPoint first so the device can be seized)
             """)
         default:
             FileHandle.standardError.write(Data("Unknown command: \(mode)\n".utf8))
@@ -162,6 +167,70 @@ final class Runner {
             return .pass
         }
         tap.start()
+
+        RunLoop.main.run()
+    }
+
+    /// Verifies the exact raw-HID path the interim cursor uses. Seizing the
+    /// device stops it from moving the real pointer, so the printed deltas are
+    /// the same numbers the blue cursor consumes.
+    func dual() {
+        print("Dual-pointer raw HID verification. Quit DualPoint first. Press Control-C to stop.")
+        print("Move ONLY the external mouse. Up must print negative dy, down positive dy.")
+        printDisplays()
+
+        var candidate: HIDDeviceInfo?
+        var seizureAttempted = false
+
+        hid.onDeviceAdded = { [weak self] info in
+            self?.devices[info.key] = info
+            print("+ \(info.name) [\(info.key)] uniqueID=\(info.uniqueID) builtIn=\(info.isBuiltIn)")
+            if candidate == nil, !info.isBuiltIn, info.uniqueID != 0 {
+                candidate = info
+            }
+        }
+        hid.onDeviceRemoved = { [weak self] id in
+            print("- \(self?.devices[id]?.name ?? id) [\(id)]")
+            self?.devices.removeValue(forKey: id)
+            self?.activity.remove(deviceID: id)
+        }
+        hid.onError = { print("  HID error: \($0)") }
+        hid.onOwnershipChange = { uniqueID, seized in
+            print("HID ownership uniqueID=\(uniqueID) \(seized ? "seized (exclusive)" : "released")")
+        }
+        hid.onSeizedMovement = { movement in
+            // Same gain curve as the engine's scaledRawDelta.
+            let dx = movement.delta.x
+            let dy = movement.delta.y
+            let gain = 1 + min(hypot(dx, dy), 40) / 40
+            print(String(
+                format: "RAW   dx=%6.0f dy=%6.0f gain=%.2f  → CG dx=%7.1f dy=%7.1f",
+                dx, dy, gain, dx * gain, dy * gain
+            ))
+        }
+        hid.onSeizedButton = { button in
+            print("BUTTON usage=\(button.usage) \(button.isPressed ? "down" : "up")")
+        }
+        hid.onSeizedScroll = { scroll in
+            print("SCROLL dx=\(scroll.delta.x) dy=\(scroll.delta.y)")
+        }
+        hid.start()
+
+        tap.onStateChange = { print("Event tap: \($0)") }
+        tap.onPointerEvent = { [weak self] event in
+            self?.printEvent(event)
+            return .pass
+        }
+        tap.start()
+
+        _ = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { _ in
+            MainActor.assumeIsolated {
+                guard !seizureAttempted, let candidate else { return }
+                seizureAttempted = true
+                let ok = self.hid.seize(deviceUniqueID: candidate.uniqueID)
+                print("Seizing \(candidate.name) (uniqueID=\(candidate.uniqueID)): \(ok ? "ok" : "FAILED")")
+            }
+        }
 
         RunLoop.main.run()
     }

@@ -3,7 +3,7 @@ import IOKit
 import IOKit.hid
 import CoreGraphics
 
-public struct HIDDeviceInfo: Equatable {
+public struct HIDDeviceInfo: Equatable, Sendable {
     public let key: String
     public let name: String
     public let kind: DeviceKind
@@ -26,16 +26,20 @@ public struct HIDActivity {
     public let detail: String
 }
 
-/// Watches every connected pointing device through IOHIDManager.
+/// Watches every connected pointing device through one IOHIDManager.
 ///
-/// Devices are opened with `kIOHIDOptionsTypeNone`, which gives DualPoint its
-/// own copy of the reports without seizing the device: normal macOS input,
-/// acceleration, drag and drop and gestures are untouched.
+/// This mirrors DoubleMouse: one manager, one open handle per device. A device
+/// that drives the blue pointer is closed and reopened with
+/// `kIOHIDOptionsTypeSeizeDevice` on that same handle, which is what actually
+/// stops the window server from moving the real cursor. Keeping a second,
+/// passive manager open on the same device prevents that and makes both
+/// pointers follow the mouse, so there is deliberately no second HID manager.
 ///
 /// The built-in trackpad on Apple Silicon Macs is exposed as a DriverKit
 /// `IOHIDEventService`, not as a classic IOHIDDevice, so its reports never
 /// reach this monitor. It is detected separately (see BuiltInTrackpadDetector)
-/// and its activity is inferred from system pointer events.
+/// and its activity is inferred from system pointer events. It can never be
+/// seized and therefore can never own the blue pointer.
 @MainActor
 public final class HIDMonitor {
     public var onDeviceAdded: ((HIDDeviceInfo) -> Void)?
@@ -43,15 +47,29 @@ public final class HIDMonitor {
     public var onActivity: ((HIDActivity) -> Void)?
     public var onError: ((String) -> Void)?
     public var onBuiltInTrackpadSeen: (() -> Void)?
+    public var onOwnershipChange: ((UInt64, Bool) -> Void)?
+
+    /// Raw reports from the currently seized device. These drive the blue cursor.
+    public var onSeizedMovement: ((SecondaryPointerDelta) -> Void)?
+    public var onSeizedScroll: ((SecondaryPointerScroll) -> Void)?
+    public var onSeizedButton: ((SecondaryPointerButton) -> Void)?
 
     public private(set) var isOpen = false
     public private(set) var lastOpenResult: IOReturn = kIOReturnSuccess
+    public private(set) var seizedDeviceUniqueID: UInt64?
+    public var canSeizeDevices: Bool { isOpen }
     public var deviceCount: Int { records.count }
 
     private var manager: IOHIDManager?
     private var records: [UInt64: Record] = [:]
     private var keyToUniqueID: [String: UInt64] = [:]
     private var started = false
+
+    // X/Y arrive as separate values in one HID report. Coalesce them so the
+    // blue pointer moves diagonally in one step.
+    private var pendingSecondaryDelta = CGPoint.zero
+    private var pendingSecondaryDeviceUniqueID: UInt64?
+    private var secondaryFlushScheduled = false
 
     fileprivate final class ActivityContext {
         unowned let monitor: HIDMonitor
@@ -81,7 +99,9 @@ public final class HIDMonitor {
         guard !started else { return }
         started = true
 
-        let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
+        // Public SDK value for kIOHIDManagerOptionIndependentDevices. Devices
+        // stay available even while one of them is opened exclusively.
+        let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(0x8))
         self.manager = manager
 
         let matching: [[String: Any]] = [
@@ -109,7 +129,9 @@ public final class HIDMonitor {
         guard started else { return }
         started = false
 
+        releaseSeized()
         for (_, record) in records {
+            IOHIDDeviceUnscheduleFromRunLoop(record.device, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
             IOHIDDeviceClose(record.device, IOOptionBits(kIOHIDOptionsTypeNone))
             if let buffer = record.reportBuffer {
                 buffer.deallocate()
@@ -124,6 +146,7 @@ public final class HIDMonitor {
         }
         manager = nil
         isOpen = false
+        resetPendingSecondary()
     }
 
     /// Re-enumerates after a permission change.
@@ -131,6 +154,44 @@ public final class HIDMonitor {
         let wasStarted = started
         stop()
         if wasStarted { start() }
+    }
+
+    // MARK: - Exclusive ownership
+
+    /// Gives the blue pointer exclusive ownership of one external device.
+    /// Returns false when the system refuses the seize; the caller then keeps
+    /// the normal single cursor. This is the same close/reopen sequence
+    /// DoubleMouse uses.
+    @discardableResult
+    public func seize(deviceUniqueID: UInt64) -> Bool {
+        guard isOpen, let record = records[deviceUniqueID], record.isOpen else { return false }
+        if seizedDeviceUniqueID == deviceUniqueID { return true }
+        if seizedDeviceUniqueID != nil { releaseSeized() }
+
+        let device = record.device
+        IOHIDDeviceClose(device, IOOptionBits(kIOHIDOptionsTypeNone))
+        let result = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeSeizeDevice))
+        if result == kIOReturnSuccess {
+            seizedDeviceUniqueID = deviceUniqueID
+            resetPendingSecondary()
+            onOwnershipChange?(deviceUniqueID, true)
+            return true
+        }
+
+        // Leave the device usable for normal input and attribution.
+        IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeNone))
+        onError?("Could not seize the second device (0x\(String(format: "%08x", result))).")
+        return false
+    }
+
+    /// Returns the seized device to the window server.
+    public func releaseSeized() {
+        guard let uniqueID = seizedDeviceUniqueID, let record = records[uniqueID] else { return }
+        IOHIDDeviceClose(record.device, IOOptionBits(kIOHIDOptionsTypeNone))
+        IOHIDDeviceOpen(record.device, IOOptionBits(kIOHIDOptionsTypeNone))
+        seizedDeviceUniqueID = nil
+        resetPendingSecondary()
+        onOwnershipChange?(uniqueID, false)
     }
 
     // MARK: - Device lifecycle
@@ -199,31 +260,36 @@ public final class HIDMonitor {
             uniqueID: uid
         )
 
-        let result = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeNone))
+        // DoubleMouse schedules each device on the main run loop before opening
+        // it. Without this, per-device value callbacks never fire: attribution
+        // fails, the external mouse is inferred as the built-in trackpad, and
+        // no blue pointer is ever created.
         let context = ActivityContext(monitor: self, deviceID: key)
-        var record = Record(
+        let contextPointer = Unmanaged.passUnretained(context).toOpaque()
+        let capacity = max(64, intProperty(device, kIOHIDMaxInputReportSizeKey) ?? 4096)
+        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: capacity)
+
+        IOHIDDeviceRegisterInputValueCallback(device, hidValueDeviceCallback, contextPointer)
+        IOHIDDeviceScheduleWithRunLoop(device, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
+        IOHIDDeviceRegisterInputReportCallback(
+            device,
+            buffer,
+            capacity,
+            hidReportCallback,
+            contextPointer
+        )
+
+        let result = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeNone))
+        let record = Record(
             info: info,
             device: device,
             context: context,
-            reportBuffer: nil,
+            reportBuffer: buffer,
             lastValueAt: 0,
             isOpen: result == kIOReturnSuccess
         )
 
-        if record.isOpen {
-            IOHIDDeviceRegisterInputValueCallback(device, hidValueDeviceCallback, Unmanaged.passUnretained(context).toOpaque())
-
-            let capacity = max(64, intProperty(device, kIOHIDMaxInputReportSizeKey) ?? 4096)
-            let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: capacity)
-            record.reportBuffer = buffer
-            IOHIDDeviceRegisterInputReportCallback(
-                device,
-                buffer,
-                capacity,
-                hidReportCallback,
-                Unmanaged.passUnretained(context).toOpaque()
-            )
-        } else {
+        if !record.isOpen {
             onError?("Could not open \(name) (\(hex(result))). It will be listed but cannot be attributed.")
         }
 
@@ -237,6 +303,12 @@ public final class HIDMonitor {
         guard let record = records.removeValue(forKey: uid) else { return }
         keyToUniqueID.removeValue(forKey: record.info.key)
 
+        if seizedDeviceUniqueID == uid {
+            seizedDeviceUniqueID = nil
+            resetPendingSecondary()
+            onOwnershipChange?(uid, false)
+        }
+        IOHIDDeviceUnscheduleFromRunLoop(record.device, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
         IOHIDDeviceClose(record.device, IOOptionBits(kIOHIDOptionsTypeNone))
         if let buffer = record.reportBuffer {
             buffer.deallocate()
@@ -247,8 +319,15 @@ public final class HIDMonitor {
     // MARK: - Input
 
     fileprivate func handle(value: IOHIDValue, for deviceID: String) {
-        guard keyToUniqueID[deviceID] != nil else { return }
         let element = IOHIDValueGetElement(value)
+        let elementUniqueID = uniqueID(for: IOHIDElementGetDevice(element))
+
+        if elementUniqueID == seizedDeviceUniqueID {
+            handleSeizedValue(value, element: element, uniqueID: elementUniqueID)
+            return
+        }
+        guard keyToUniqueID[deviceID] != nil else { return }
+
         let page = Int(IOHIDElementGetUsagePage(element))
         let usage = Int(IOHIDElementGetUsage(element))
         let intValue = IOHIDValueGetIntegerValue(value)
@@ -306,6 +385,7 @@ public final class HIDMonitor {
 
     fileprivate func handleReport(deviceID: String, length: Int) {
         guard let uid = keyToUniqueID[deviceID], let record = records[uid] else { return }
+        if uid == seizedDeviceUniqueID { return }
         // Devices that deliver input values are already handled precisely.
         // Some trackpads only deliver raw reports; treat an isolated report as
         // activity so they can still trigger a device switch.
@@ -320,6 +400,71 @@ public final class HIDMonitor {
             isButtonPress: false,
             detail: "input report (\(length) bytes)"
         ))
+    }
+
+    // MARK: - Seized device input
+
+    private func handleSeizedValue(_ value: IOHIDValue, element: IOHIDElement, uniqueID: UInt64) {
+        let page = Int(IOHIDElementGetUsagePage(element))
+        let usage = Int(IOHIDElementGetUsage(element))
+        let intValue = IOHIDValueGetIntegerValue(value)
+
+        switch (page, usage) {
+        case (Int(kHIDPage_GenericDesktop), Int(kHIDUsage_GD_X)):
+            accumulateSecondary(CGPoint(x: CGFloat(intValue), y: 0), uniqueID: uniqueID)
+        case (Int(kHIDPage_GenericDesktop), Int(kHIDUsage_GD_Y)):
+            accumulateSecondary(CGPoint(x: 0, y: CGFloat(intValue)), uniqueID: uniqueID)
+        case (Int(kHIDPage_GenericDesktop), Int(kHIDUsage_GD_Wheel)):
+            flushSecondaryMovement()
+            onSeizedScroll?(SecondaryPointerScroll(
+                deviceUniqueID: uniqueID,
+                delta: CGPoint(x: 0, y: CGFloat(intValue))
+            ))
+        case (Int(kHIDPage_Consumer), 0x238): // Horizontal wheel / tilt.
+            flushSecondaryMovement()
+            onSeizedScroll?(SecondaryPointerScroll(
+                deviceUniqueID: uniqueID,
+                delta: CGPoint(x: CGFloat(intValue), y: 0)
+            ))
+        case (Int(kHIDPage_Button), 1), (Int(kHIDPage_Button), 2), (Int(kHIDPage_Button), 3):
+            flushSecondaryMovement()
+            onSeizedButton?(SecondaryPointerButton(
+                deviceUniqueID: uniqueID,
+                usage: usage,
+                isPressed: intValue != 0
+            ))
+        default:
+            break
+        }
+    }
+
+    private func accumulateSecondary(_ delta: CGPoint, uniqueID: UInt64) {
+        if let pending = pendingSecondaryDeviceUniqueID, pending != uniqueID {
+            flushSecondaryMovement()
+        }
+        pendingSecondaryDeviceUniqueID = uniqueID
+        pendingSecondaryDelta.x += delta.x
+        pendingSecondaryDelta.y += delta.y
+        guard !secondaryFlushScheduled else { return }
+        secondaryFlushScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            self?.flushSecondaryMovement()
+        }
+    }
+
+    private func flushSecondaryMovement() {
+        secondaryFlushScheduled = false
+        let delta = pendingSecondaryDelta
+        let uniqueID = pendingSecondaryDeviceUniqueID
+        resetPendingSecondary()
+        guard let uniqueID, delta.x != 0 || delta.y != 0 else { return }
+        onSeizedMovement?(SecondaryPointerDelta(deviceUniqueID: uniqueID, delta: delta))
+    }
+
+    private func resetPendingSecondary() {
+        pendingSecondaryDelta = .zero
+        pendingSecondaryDeviceUniqueID = nil
+        secondaryFlushScheduled = false
     }
 
     // MARK: - Properties

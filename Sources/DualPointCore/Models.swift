@@ -4,7 +4,7 @@ import CoreGraphics
 // MARK: - Devices
 
 /// The physical class of a pointing device as far as DualPoint is concerned.
-public enum DeviceKind: String, Codable, CaseIterable {
+public enum DeviceKind: String, Codable, CaseIterable, Sendable {
     case builtInTrackpad
     case mouse
     case trackpad

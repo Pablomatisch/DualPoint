@@ -25,9 +25,7 @@ public struct InterimCursorPolicy: Equatable {
     /// switching between devices.
     public var isEnabled: Bool
     /// Minimum quiet time after the interim device stops before the real cursor
-    /// moves to it. Also the minimum interval between two automatic handovers,
-    /// which prevents the real cursor from ping-ponging when both devices are
-    /// used in quick succession.
+    /// moves to its position. This is the user-facing handover delay.
     public var handoverCooldown: TimeInterval
     /// How recently the main device must have moved for a second moving device
     /// to count as simultaneous instead of a normal handover.
@@ -54,12 +52,13 @@ public struct InterimCursorPolicy: Equatable {
 ///
 /// The rules are intentionally small and testable:
 ///
-/// * The device that moved first keeps the real cursor.
-/// * A different device that moves while the first one is still moving gets the
-///   interim cursor. It is suppressed by the event tap, so it no longer steers
-///   the real cursor.
-/// * When the interim device settles and the cooldown has passed, its position
-///   is adopted: the real cursor warps to it and it becomes the main device.
+/// * The device that owns the real cursor keeps it.
+/// * A different, seizable external device that moves while the first one is
+///   still moving gets the interim cursor. It is seized at the HID level, so it
+///   cannot steer the real cursor.
+/// * When the interim device settles, its position is saved for that device and
+///   the blue pointer disappears. The real cursor stays where the main device
+///   left it; ownership does not change.
 /// * A single moving device is never affected.
 public struct InterimCursorArbiter: Equatable {
     public private(set) var mainDeviceID: String?
@@ -68,6 +67,9 @@ public struct InterimCursorArbiter: Equatable {
     public var policy: InterimCursorPolicy
 
     private var lastMovementAt: [String: UInt64] = [:]
+    /// Deadline after which adoption may resume. Main-device movement extends it
+    /// so the real cursor is not yanked back while the user is actively using it.
+    private var adoptionHoldUntil: UInt64 = 0
 
     public init(policy: InterimCursorPolicy = InterimCursorPolicy()) {
         self.policy = policy
@@ -118,6 +120,12 @@ public struct InterimCursorArbiter: Equatable {
 
     public mutating func startInterim(_ deviceID: String) {
         interimDeviceID = deviceID
+        adoptionHoldUntil = 0
+    }
+
+    /// Delays adoption without ending the dual-pointer session.
+    public mutating func deferAdoption(until now: UInt64, for duration: TimeInterval) {
+        adoptionHoldUntil = max(adoptionHoldUntil, now &+ Self.nanoseconds(duration))
     }
 
     public func interimHasSettled(at now: UInt64) -> Bool {
@@ -135,6 +143,7 @@ public struct InterimCursorArbiter: Equatable {
 
     public func canAdoptInterim(at now: UInt64) -> Bool {
         guard let interimDeviceID, cooldownElapsed(at: now) else { return false }
+        guard now >= adoptionHoldUntil else { return false }
 
         // The user-facing handover delay is the quiet time the interim device
         // has to produce after its last movement. Never undercut the internal
@@ -147,19 +156,23 @@ public struct InterimCursorArbiter: Equatable {
         return now - last >= requiredQuiet
     }
 
-    /// Makes the interim device the main device and starts the cooldown.
-    /// Returns the device that now owns the real cursor.
+    /// Ends an interim session without changing which device owns the real
+    /// cursor. The engine saves the blue position for the external device and
+    /// leaves the real pointer untouched. Ownership stays with the main device
+    /// because macOS provides no public way to stop an unseizable device (the
+    /// built-in trackpad) from moving the real pointer once it becomes main.
     @discardableResult
-    public mutating func adoptInterim(at now: UInt64) -> String? {
+    public mutating func finishInterim(at now: UInt64) -> String? {
         guard let deviceID = interimDeviceID else { return nil }
         interimDeviceID = nil
-        mainDeviceID = deviceID
         lastHandoverAt = now
+        adoptionHoldUntil = 0
         return deviceID
     }
 
     public mutating func cancelInterim() {
         interimDeviceID = nil
+        adoptionHoldUntil = 0
     }
 
     public mutating func reset() {
@@ -167,6 +180,7 @@ public struct InterimCursorArbiter: Equatable {
         interimDeviceID = nil
         lastMovementAt.removeAll()
         lastHandoverAt = nil
+        adoptionHoldUntil = 0
     }
 
     private static func nanoseconds(_ seconds: TimeInterval) -> UInt64 {

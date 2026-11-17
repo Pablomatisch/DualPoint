@@ -113,8 +113,8 @@ Four tabs: General, Devices, Activity, About. The sidebar holds the brand,
 status, navigation and — only while setup is incomplete — a “Finish setup” card.
 General covers switching, simultaneous cursors, permissions and login. The
 Simultaneous cursors card holds the on/off toggle, the handover-delay slider and
-a single explanation; the Accessibility warning appears only when the permission
-is missing. Devices shows assignment rows and a live display map. Activity shows
+a single explanation; it reports when no external device can be seized. Devices
+shows assignment rows and a live display map. Activity shows
 the last switch and a filterable local log. About is a short statement of purpose
 plus version information.
 
@@ -133,6 +133,6 @@ blue cursor and the settle handover are exercised.
 - Keep subtitles to one line where possible.
 - Do not repeat the screen title in the header, the card and the footer.
 - Say “restores its last position” rather than explaining anchors.
-- Say “the other gets a blue one” rather than “interim cursor overlay”.
+- Say “the external mouse gets a blue one” rather than “interim cursor overlay”.
 - Never claim a hardware behavior in the UI that has not been tested; the
   testing status lives in `docs/TESTING.md`.

@@ -301,7 +301,7 @@ private struct GeneralSettingsTab: View {
 
             GlassCard(
                 title: "Simultaneous cursors",
-                subtitle: "Move both devices at once. The first one keeps the real cursor.",
+                subtitle: "Move an external mouse while the trackpad moves. The trackpad keeps the real cursor.",
                 symbol: "cursorarrow.rays"
             ) {
                 Toggle(isOn: Binding(
@@ -312,7 +312,7 @@ private struct GeneralSettingsTab: View {
                         Text("Show a second cursor")
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(Brand.textPrimary)
-                        Text("The other device gets a blue cursor until it stops.")
+                        Text("An external mouse gets a blue cursor while both devices move.")
                             .font(.system(size: 11))
                             .foregroundStyle(Brand.textSecondary)
                     }
@@ -344,7 +344,7 @@ private struct GeneralSettingsTab: View {
                     )
                     .tint(Brand.accent)
 
-                    Text("After the second device stops, the real cursor moves to it once this delay has passed. Raise it if fast switching between devices feels too eager.")
+                    Text("How long the external mouse and trackpad must both stay still before the blue pointer is removed. Its final position is saved for that mouse; the real cursor stays where the trackpad left it. Raise it if the blue pointer disappears too early.")
                         .font(.system(size: 10.5))
                         .foregroundStyle(Brand.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -355,7 +355,7 @@ private struct GeneralSettingsTab: View {
                         Image(systemName: "lock.open.fill")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(Brand.warning)
-                        Text("Pointer monitoring is required. Accessibility is also needed for the built-in trackpad, which cannot be taken over through raw HID.")
+                        Text("Input Monitoring is required. Connect an external mouse: only seized external devices can show a second cursor.")
                             .font(.system(size: 10.5))
                             .foregroundStyle(Brand.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -365,7 +365,7 @@ private struct GeneralSettingsTab: View {
 
             GlassCard(
                 title: "Permissions",
-                subtitle: "Input Monitoring finds and isolates devices. Accessibility covers the trackpad fallback.",
+                subtitle: "Input Monitoring finds devices and lets DualPoint isolate an external mouse.",
                 symbol: "lock.shield.fill"
             ) {
                 StatusRow(
@@ -386,12 +386,8 @@ private struct GeneralSettingsTab: View {
 
                 StatusRow(
                     title: "Accessibility",
-                    detail: engine.canSuppressPointerEvents
-                        ? "Granted. The built-in trackpad can also drive the blue cursor."
-                        : (engine.permissions.accessibilityTrusted
-                            ? "Granted, but the pointer tap is listen-only. Restart DualPoint."
-                            : "Optional. External devices use raw HID; this is only needed for the built-in trackpad."),
-                    isGood: engine.canSuppressPointerEvents || engine.canIsolateExternalDevices
+                    detail: "Optional. The blue pointer uses raw HID on external devices; the built-in trackpad always owns the real cursor.",
+                    isGood: true
                 )
 
                 HStack(spacing: 8) {
@@ -407,15 +403,6 @@ private struct GeneralSettingsTab: View {
                     Spacer(minLength: 0)
                 }
 
-                if !engine.canSuppressPointerEvents {
-                    HStack(spacing: 8) {
-                        Button("Enable Accessibility") { engine.requestAccessibility() }
-                            .buttonStyle(SecondaryButtonStyle(compact: true))
-                        Button("Open Accessibility Settings") { engine.openAccessibilitySettings() }
-                            .buttonStyle(GhostButtonStyle(compact: true))
-                        Spacer(minLength: 0)
-                    }
-                }
             }
 
             GlassCard(

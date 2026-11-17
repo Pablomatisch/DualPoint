@@ -335,7 +335,7 @@ enum InterimCursorTests {
             suite.check(arbiter.interimHasSettled(at: second + 350 * ms), "settled")
         }
 
-        suite.run("adoption promotes the interim device and starts the cooldown") {
+        suite.run("finishing the interim session clears it and starts the cooldown") {
             var arbiter = InterimCursorArbiter(
                 policy: InterimCursorPolicy(handoverCooldown: 1.0)
             )
@@ -344,8 +344,8 @@ enum InterimCursorTests {
 
             let adoptAt = second + 1_100 * ms
             suite.check(arbiter.canAdoptInterim(at: adoptAt), "can adopt")
-            suite.equal(arbiter.adoptInterim(at: adoptAt), "trackpad")
-            suite.equal(arbiter.mainDeviceID, "trackpad")
+            suite.equal(arbiter.finishInterim(at: adoptAt), "trackpad")
+            suite.equal(arbiter.mainDeviceID, "mouse", "the real cursor keeps its owner")
             suite.check(arbiter.interimDeviceID == nil, "interim cleared")
             suite.check(!arbiter.cooldownElapsed(at: adoptAt + 500 * ms), "cooldown active")
             suite.check(arbiter.cooldownElapsed(at: adoptAt + 1_000 * ms), "cooldown elapsed")
@@ -363,13 +363,30 @@ enum InterimCursorTests {
             suite.check(arbiter.canAdoptInterim(at: second + 1_000 * ms), "delay elapsed")
         }
 
+        suite.run("main-device movement defers adoption without ending dual mode") {
+            var arbiter = InterimCursorArbiter(
+                policy: InterimCursorPolicy(handoverCooldown: 0.8)
+            )
+            arbiter.setMain("mouse")
+            arbiter.startInterim("trackpad")
+
+            // With no interim movement the cursor is settled and ready. Active
+            // use of the real cursor extends the hold-off, but the blue pointer
+            // must remain visible so the two devices can still be used together.
+            suite.check(arbiter.canAdoptInterim(at: second), "initially ready")
+            arbiter.deferAdoption(until: second, for: 0.8)
+            suite.check(!arbiter.canAdoptInterim(at: second + 500 * ms), "deferred while main is moving")
+            suite.equal(arbiter.interimDeviceID, "trackpad", "dual pointer is still active")
+            suite.check(arbiter.canAdoptInterim(at: second + 800 * ms), "allowed after hold-off")
+        }
+
         suite.run("the cooldown blocks a rapid second handover") {
             var arbiter = InterimCursorArbiter(
                 policy: InterimCursorPolicy(handoverCooldown: 0.8)
             )
             arbiter.setMain("mouse")
             arbiter.startInterim("trackpad")
-            arbiter.adoptInterim(at: second)
+            arbiter.finishInterim(at: second)
 
             arbiter.noteMovement("mouse", at: second + 100 * ms)
             arbiter.startInterim("mouse")
@@ -383,7 +400,7 @@ enum InterimCursorTests {
             )
             arbiter.setMain("mouse")
             arbiter.startInterim("trackpad")
-            arbiter.adoptInterim(at: second)
+            arbiter.finishInterim(at: second)
             arbiter.startInterim("mouse")
             suite.check(arbiter.canAdoptInterim(at: second), "zero delay")
         }
@@ -418,7 +435,7 @@ enum InterimCursorTests {
             var arbiter = InterimCursorArbiter()
             arbiter.setMain("mouse")
             arbiter.startInterim("trackpad")
-            arbiter.adoptInterim(at: second)
+            arbiter.finishInterim(at: second)
             arbiter.reset()
             suite.check(arbiter.mainDeviceID == nil, "main cleared")
             suite.check(arbiter.interimDeviceID == nil, "interim cleared")

@@ -62,6 +62,27 @@ public final class DiagnosticLog: ObservableObject {
         append(category, message, level: .error)
     }
 
+    /// High-volume routing detail. Unlike the methods above this never enters
+    /// the in-memory list observed by SwiftUI, so enabling a trace cannot make
+    /// the panel churn. It is written to the file log and unified logging only.
+    public func trace(_ category: String, _ message: String) {
+        logger.info("[\(category, privacy: .public)] \(message, privacy: .public)")
+        guard fileLoggingEnabled else { return }
+        let line = "\(ISO8601DateFormatter().string(from: Date())) T [\(category)] \(message)\n"
+        let url = fileURL
+        queue.async {
+            guard let data = line.data(using: .utf8) else { return }
+            if FileManager.default.fileExists(atPath: url.path),
+               let handle = try? FileHandle(forWritingTo: url) {
+                defer { try? handle.close() }
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: data)
+            } else {
+                try? data.write(to: url, options: .atomic)
+            }
+        }
+    }
+
     private enum Level: String {
         case info = "I"
         case warning = "W"

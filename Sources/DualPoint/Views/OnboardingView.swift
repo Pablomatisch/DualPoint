@@ -164,7 +164,7 @@ struct OnboardingView: View {
                 featureCard(
                     symbol: "cursorarrow.rays",
                     title: "Move both at once",
-                    detail: "The first device keeps the real cursor; the other gets a blue one."
+                    detail: "Your main device keeps the real cursor; an external mouse gets a blue one."
                 )
                 featureCard(
                     symbol: "display.2",
@@ -209,10 +209,10 @@ struct OnboardingView: View {
                         .foregroundStyle(Brand.warning)
                 }
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("One required. One for two cursors.")
+                    Text("One permission. An external mouse for two cursors.")
                         .font(.system(size: 26, weight: .bold, design: .rounded))
                         .foregroundStyle(Brand.textPrimary)
-                    Text("Input Monitoring lets DualPoint match pointer events to the physical device. Accessibility is optional: it lets a second device move the blue cursor independently while both are in use.")
+                    Text("Input Monitoring lets DualPoint match pointer events to the physical device and read an external mouse directly. The blue cursor is only available on external devices; the built-in trackpad always owns the real cursor.")
                         .font(.system(size: 11.5))
                         .foregroundStyle(Brand.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -233,7 +233,7 @@ struct OnboardingView: View {
 
             GlassCard(
                 title: "Permission status",
-                subtitle: "Input Monitoring is required. Accessibility adds the second cursor.",
+                subtitle: "Input Monitoring is required. An external mouse provides the second cursor.",
                 symbol: "lock.shield.fill"
             ) {
                 StatusRow(
@@ -254,12 +254,8 @@ struct OnboardingView: View {
 
                 StatusRow(
                     title: "Accessibility",
-                    detail: engine.canSuppressPointerEvents
-                        ? "Granted. The built-in trackpad can also drive the blue cursor."
-                        : (engine.permissions.accessibilityTrusted
-                            ? "Granted, but the pointer tap is listen-only. Restart DualPoint."
-                            : "Optional. External devices use raw HID; this is only needed for the built-in trackpad."),
-                    isGood: engine.canSuppressPointerEvents || engine.canIsolateExternalDevices
+                    detail: "Optional. The blue pointer uses raw HID on external devices; the built-in trackpad always owns the real cursor.",
+                    isGood: true
                 )
 
                 HStack(spacing: 8) {
@@ -278,21 +274,6 @@ struct OnboardingView: View {
                     }
                     .buttonStyle(GhostButtonStyle(compact: true))
                     Spacer(minLength: 0)
-                }
-
-                if !engine.canSuppressPointerEvents {
-                    HStack(spacing: 8) {
-                        Button("Enable Accessibility") {
-                            engine.requestAccessibility()
-                        }
-                        .buttonStyle(SecondaryButtonStyle(compact: true))
-
-                        Button("Open Accessibility Settings") {
-                            engine.openAccessibilitySettings()
-                        }
-                        .buttonStyle(GhostButtonStyle(compact: true))
-                        Spacer(minLength: 0)
-                    }
                 }
 
                 if !canFinish {
@@ -423,7 +404,7 @@ struct OnboardingView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     instructionRow(number: "1", text: "Move the trackpad. The cursor goes to the MacBook display.")
                     instructionRow(number: "2", text: "Move the mouse. The cursor returns to its own display.")
-                    instructionRow(number: "3", text: "Move both together. The first device keeps the real cursor; the other gets a blue one, then the real cursor follows once it stops.")
+                    instructionRow(number: "3", text: "Move the trackpad and mouse together. The trackpad keeps the real cursor; the mouse gets a blue one, then the real cursor jumps to its position once the mouse stops.")
                 }
 
                 if engine.interimCursorEnabled && !engine.supportsInterimCursor {
@@ -431,7 +412,7 @@ struct OnboardingView: View {
                         Image(systemName: "info.circle.fill")
                             .foregroundStyle(Brand.accent)
                             .font(.system(size: 11))
-                        Text("External devices are isolated through raw HID. Accessibility and an active pointer tap are only needed for the built-in trackpad fallback.")
+                        Text("Connect an external mouse. The blue pointer seizes it through raw HID so it cannot move the real cursor. The built-in trackpad cannot be seized and always owns the real cursor.")
                             .font(.system(size: 10.5))
                             .foregroundStyle(Brand.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
