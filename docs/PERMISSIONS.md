@@ -31,19 +31,23 @@ effect without a relaunch. “Check Again” in Settings forces an immediate ref
 
 ## Accessibility
 
-Accessibility is required only for **simultaneous cursors**. When two devices
-move at once, DualPoint keeps the real cursor with the first one and draws a blue
-interim cursor for the other. To do that it must:
+For **simultaneous cursors**, an external mouse or trackpad is isolated through
+raw HID: DualPoint opens it with `kIOHIDOptionsTypeSeizeDevice`, reads its X/Y
+counts and releases it when the blue pointer is handed over. That path is
+covered by Input Monitoring and does not need Accessibility.
+
+Accessibility is required only for the **built-in trackpad fallback**. The
+trackpad is a DriverKit event service and cannot be seized. When it becomes the
+second device, DualPoint must:
 
 - Create an active `CGEventTap` (`.defaultTap`), which can drop events.
-- Consume the interim device's movement so it no longer steers the real cursor.
-- Rewrite the location of a click or scroll from the interim device so the event
-  lands at the blue cursor.
+- Consume the trackpad's movement so it no longer steers the real cursor.
+- Post clicks at the blue cursor position when that device is used.
 
-`AXIsProcessTrusted()` is the check. Without it DualPoint keeps working exactly
-as before: one real cursor, a normal handover when the other device moves, and a
-visible warning in Settings and Setup that the second cursor is unavailable.
-Nothing is consumed and no events are synthesized.
+`AXIsProcessTrusted()` is the check. Without it, external devices still get an
+independent blue cursor, but the built-in trackpad cannot; both devices then
+share the real cursor. Nothing is consumed and no events are synthesized on the
+single-device path.
 
 The permission is never used to read window contents, menus, keystrokes or
 clipboard data.

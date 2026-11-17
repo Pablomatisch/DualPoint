@@ -255,11 +255,11 @@ struct OnboardingView: View {
                 StatusRow(
                     title: "Accessibility",
                     detail: engine.canSuppressPointerEvents
-                        ? "Granted. Both devices can move independently."
+                        ? "Granted. The built-in trackpad can also drive the blue cursor."
                         : (engine.permissions.accessibilityTrusted
                             ? "Granted, but the pointer tap is listen-only. Restart DualPoint."
-                            : "Optional. Needed only when both devices move at once."),
-                    isGood: engine.canSuppressPointerEvents
+                            : "Optional. External devices use raw HID; this is only needed for the built-in trackpad."),
+                    isGood: engine.canSuppressPointerEvents || engine.canIsolateExternalDevices
                 )
 
                 HStack(spacing: 8) {
@@ -431,7 +431,7 @@ struct OnboardingView: View {
                         Image(systemName: "info.circle.fill")
                             .foregroundStyle(Brand.accent)
                             .font(.system(size: 11))
-                        Text("Without Accessibility and an active pointer tap, both devices share the real cursor.")
+                        Text("External devices are isolated through raw HID. Accessibility and an active pointer tap are only needed for the built-in trackpad fallback.")
                             .font(.system(size: 10.5))
                             .foregroundStyle(Brand.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)

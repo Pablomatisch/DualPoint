@@ -44,4 +44,50 @@ public enum CursorController {
     public static func warpToCenter(of display: DisplayInfo) -> Bool {
         warp(to: CursorGeometry.defaultPoint(for: display))
     }
+
+    // MARK: - Synthetic input for a seized device
+
+    private static let syntheticSource: CGEventSource? = {
+        let source = CGEventSource(stateID: .privateState)
+        source?.localEventsSuppressionInterval = 0
+        return source
+    }()
+
+    /// Delivers a click from the interim device at the blue pointer. Used only
+    /// after the device has been released and the real cursor handed over.
+    public static func click(at point: CGPoint, button: CGMouseButton, isPressed: Bool) {
+        guard let source = syntheticSource else { return }
+        let type: CGEventType
+        switch (button, isPressed) {
+        case (.left, true): type = .leftMouseDown
+        case (.left, false): type = .leftMouseUp
+        case (.right, true): type = .rightMouseDown
+        case (.right, false): type = .rightMouseUp
+        case (.center, true): type = .otherMouseDown
+        case (.center, false): type = .otherMouseUp
+        default: type = isPressed ? .leftMouseDown : .leftMouseUp
+        }
+        let event = CGEvent(
+            mouseEventSource: source,
+            mouseType: type,
+            mouseCursorPosition: point,
+            mouseButton: button
+        )
+        event?.post(tap: .cghidEventTap)
+    }
+
+    /// Scrolls the window under the blue pointer without moving the real one.
+    public static func scroll(at point: CGPoint, horizontal: Int64, vertical: Int64) {
+        guard let source = syntheticSource else { return }
+        guard let event = CGEvent(
+            scrollWheelEvent2Source: source,
+            units: .pixel,
+            wheelCount: 2,
+            wheel1: Int32(clamping: vertical),
+            wheel2: Int32(clamping: horizontal),
+            wheel3: 0
+        ) else { return }
+        event.location = point
+        event.post(tap: .cghidEventTap)
+    }
 }

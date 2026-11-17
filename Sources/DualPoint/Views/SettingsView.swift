@@ -355,7 +355,7 @@ private struct GeneralSettingsTab: View {
                         Image(systemName: "lock.open.fill")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(Brand.warning)
-                        Text("The second cursor cannot move independently until Accessibility is granted and pointer monitoring is active.")
+                        Text("Pointer monitoring is required. Accessibility is also needed for the built-in trackpad, which cannot be taken over through raw HID.")
                             .font(.system(size: 10.5))
                             .foregroundStyle(Brand.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -365,7 +365,7 @@ private struct GeneralSettingsTab: View {
 
             GlassCard(
                 title: "Permissions",
-                subtitle: "Input Monitoring finds devices. Accessibility powers the second cursor.",
+                subtitle: "Input Monitoring finds and isolates devices. Accessibility covers the trackpad fallback.",
                 symbol: "lock.shield.fill"
             ) {
                 StatusRow(
@@ -387,11 +387,11 @@ private struct GeneralSettingsTab: View {
                 StatusRow(
                     title: "Accessibility",
                     detail: engine.canSuppressPointerEvents
-                        ? "Granted. Both cursors can move independently."
+                        ? "Granted. The built-in trackpad can also drive the blue cursor."
                         : (engine.permissions.accessibilityTrusted
                             ? "Granted, but the pointer tap is listen-only. Restart DualPoint."
-                            : "Optional. Without it, two devices cannot move at the same time."),
-                    isGood: engine.canSuppressPointerEvents
+                            : "Optional. External devices use raw HID; this is only needed for the built-in trackpad."),
+                    isGood: engine.canSuppressPointerEvents || engine.canIsolateExternalDevices
                 )
 
                 HStack(spacing: 8) {

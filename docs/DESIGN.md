@@ -80,9 +80,9 @@ cards, so nothing sits against an edge.
 - `HoverCard` — same glass, with a brighter gradient and edge on hover and a
   stronger accent border for the active device row.
 - `VisualEffectView` — native vibrancy for the Settings sidebar.
-- `InterimCursorOverlay` — a transparent window across all displays with a
-  `CAShapeLayer` arrow: electric-blue fill, 1.3 pt white stroke, soft blue glow.
-  It has no border, no background and no shadow of its own.
+- `InterimCursorOverlay` — a transparent window across all displays drawing the
+  system arrow image tinted electric blue, at the system hotspot and size. It has
+  no border, no background and no shadow of its own.
 
 ## Motion
 

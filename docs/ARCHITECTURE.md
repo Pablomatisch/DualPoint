@@ -29,14 +29,19 @@ the other.
 ```
 ┌──────────────────────┐      HID reports      ┌────────────────────┐
 │ IOHIDManager         │ ────────────────────► │                    │
-│ (mice, trackpads)    │                       │   DualPointEngine  │
+│ (attribution only)   │                       │   DualPointEngine  │
 └──────────────────────┘                       │                    │
                                                │  · device registry │
-┌──────────────────────┐   pointer events      │  · activity table  │
-│ CGEventTap           │ ────────────────────► │  · switching       │
-│ (active with         │ ◄──────────────────── │  · interim arbiter │
-│  Accessibility)      │   pass / consume      │  · anchors         │
-└──────────────────────┘                       └─────────┬──────────┘
+┌──────────────────────┐   raw HID, seized     │  · activity table  │
+│ SecondaryPointer     │ ────────────────────► │  · switching       │
+│ Monitor              │ ◄──────────────────── │  · interim arbiter │
+└──────────────────────┘   release on handover │  · anchors         │
+                                               └─────────┬──────────┘
+┌──────────────────────┐   pointer events      ▲
+│ CGEventTap           │ ──────────────────────┘
+│ (fallback for the    │   pass / consume
+│  built-in trackpad)  │
+└──────────────────────┘
                                                          │
                          ┌───────────────────────────────┼──────────────────┐
                          │                               │                  │
@@ -57,9 +62,10 @@ directly.
 
 | Module | Responsibility |
 | --- | --- |
-| `HIDMonitor` | Enumerates pointing devices with `IOHIDManager`, opens them without seizing, streams values and input reports, reports hot-plug. |
-| `BuiltInTrackpadDetector` | Finds the built-in trackpad through DriverKit/IOHID services; it has no classic HID reports. |
-| `EventTapMonitor` | `CGEventTap` for movement, buttons and scrolling. Active tap when Accessibility is granted, listen-only otherwise. |
+| `HIDMonitor` | Enumerates pointing devices with `IOHIDManager`, opens them without seizing, streams values and input reports for attribution, reports hot-plug. |
+| `SecondaryPointerMonitor` | A second, independent `IOHIDManager` that exclusively seizes the external device driving the blue pointer and streams raw X/Y, wheel and button reports. Releases the device on handover. |
+| `BuiltInTrackpadDetector` | Finds the built-in trackpad through DriverKit/IOHID services; it has no classic HID reports and cannot be seized. |
+| `EventTapMonitor` | `CGEventTap` for movement, buttons and scrolling. Active tap with Accessibility; used only as the fallback that suppresses the built-in trackpad. |
 | `Attribution` | Timestamp table that maps a pointer event to the newest preceding HID report. |
 | `InterimCursor` | Arbiter for simultaneous movement: main/interim roles, settle detection, handover cooldown and policy. |
 | `DisplayManager` | Enumerates `CGDirectDisplayID`s, names, bounds, scale, main/built-in flags; emits changes. |
@@ -162,9 +168,19 @@ quit.
 
 ## Simultaneous cursors
 
-With Accessibility granted, `EventTapMonitor` creates an active tap that may
-consume events. The engine uses that only for the interim device; every other
-event is passed through unchanged.
+External pointing devices are isolated at the source, following DoubleMouse's
+model. `SecondaryPointerMonitor` opens the device that is about to become blue
+with `kIOHIDOptionsTypeSeizeDevice`. macOS then stops delivering that device's
+reports to the window server, so it can no longer drag the real cursor around
+behind the blue one. Raw X/Y counts are coalesced per report, scaled with a
+linear 1x–2x gain curve and applied to the overlay. Clicks are synthesized at
+the blue position after the device is released; scrolls are synthesized without
+moving the real cursor.
+
+The built-in trackpad is a DriverKit event service and cannot be seized. When
+it is the second device, DualPoint falls back to an active `CGEventTap` that
+consumes its movement and uses the event deltas for the overlay. Accessibility
+is therefore required only for that case.
 
 `InterimCursorArbiter` holds three facts: the device that owns the real cursor
 (`mainDeviceID`), the device that owns the drawn cursor (`interimDeviceID`) and
@@ -172,36 +188,35 @@ the last movement timestamp per device. Its rules are:
 
 1. The first device to move owns the real cursor.
 2. A different device that moves while the main device moved within the last
-   350 ms gets the interim cursor. Its movement is consumed and applied to the
-   overlay, starting from its own saved position.
+   350 ms gets the interim cursor, starting from its own saved position.
 3. When the interim device has been quiet for the configured handover delay
    (never less than the internal 280 ms settle delay) and the cooldown since the
-   last handover has elapsed, the real cursor warps to its position and it
-   becomes the main device.
-4. If the outgoing main device is still moving at that moment, it becomes the
-   new interim device and keeps the same overlay at the position the real cursor
-   just left. This role swap avoids a flash and lets both users keep moving.
-5. A button press or scroll from the interim device commits immediately: the
-   real cursor warps to it, the click passes through at that point, and the
-   device becomes the main device. Drags are never interrupted by a timer.
-6. The handover delay (0–3 s, default 0.8 s) is both the quiet time after the
+   last handover has elapsed, the seized device is released, the real cursor
+   warps to the blue position, the overlay disappears and the blue device
+   becomes the only active device. There is no role swap: the previous main
+   device does not acquire a new blue cursor.
+4. A button press from the interim device commits immediately: the device is
+   released, the real cursor warps to it, and the click is posted there. A
+   scroll stays at the blue position without committing. Drags are never
+   interrupted by a timer.
+5. The handover delay (0–3 s, default 0.8 s) is both the quiet time after the
    interim device stops and the minimum interval between two automatic
-   handovers, which blocks ping-ponging. A button or scroll from the interim
-   device is explicit and bypasses both waits.
-7. Single-device movement never reaches the interim path: when the device is
+   handovers, which blocks ping-ponging. A button press bypasses both waits.
+6. Single-device movement never reaches the interim path: when the device is
    already `activeDeviceID`, the event passes straight through.
 
 The overlay (`InterimCursorOverlay` in the app target) is one transparent,
 non-activating `NSWindow` spanning the union of every display. Its content view
 is flipped so local coordinates match Core Graphics, it ignores mouse events and
-never becomes key. The arrow is a `CAShapeLayer` in the app icon's electric blue
-with a white stroke and blue glow. Movement updates only the layer position, so
-it stays cheap at event rate; a 30 Hz timer checks settling.
+never becomes key. The arrow is `NSCursor.arrow.image` tinted with the app
+icon's electric blue, drawn at the system hotspot so it is exactly the same
+size as the real pointer. Only the small dirty rectangles around the old and new
+positions are redrawn; a 30 Hz timer checks settling.
 
-Without Accessibility the tap is listen-only and cannot suppress the interim
-device. The arbiter is not used, the overlay is not drawn, and both devices
-share the real cursor as before. The UI states this explicitly instead of
-pretending the feature works.
+If neither isolation path is available — no Input Monitoring for HID seizure and
+no active tap for the trackpad — the arbiter is not used, the overlay is not
+drawn, and both devices share the real cursor as before. The UI states this
+explicitly instead of pretending the feature works.
 
 `PersistedState` stores `interimCursorEnabled` and `handoverCooldown`. The
 schema accepts older files without these keys and fills in the defaults.
@@ -276,8 +291,9 @@ Settings window and the default app menu.
 | --- | --- |
 | Input Monitoring denied | HID monitoring stops, devices are not listed, switching stays paused; a 2 s timer retries after approval. |
 | Event tap unavailable | Switching is paused; the UI explains the missing permission. |
-| Accessibility denied | An active tap cannot be created, so the interim cursor stays off and both devices share the real cursor. |
-| Accessibility granted while running | The tap is restarted once, so the second cursor starts working without a relaunch. |
+| Accessibility denied | External devices still get a blue cursor through HID seizure; the built-in trackpad cannot, so both devices share the real cursor in that case. |
+| Accessibility granted while running | The tap is restarted once, so the trackpad fallback starts working without a relaunch. |
+| HID seizure refused | The engine logs the error and falls back to event-tap suppression when available; otherwise normal switching continues. |
 | Interim device disconnects | The overlay is hidden, its last point is saved if possible, and the real cursor keeps its position. |
 | Permission or event tap lost with an interim cursor visible | The overlay is hidden and the interim role is cleared; no warp happens. |
 | HID open fails for one device | The device is listed but cannot be attributed; the error is logged. |

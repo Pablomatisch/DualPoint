@@ -1,18 +1,14 @@
 import AppKit
-import QuartzCore
 import DualPointCore
 
-/// Draws the app-owned second cursor.
+/// Draws the app-owned second pointer.
 ///
-/// The overlay is one transparent, non-activating window that spans every
-/// display. It never accepts mouse events and never becomes key, so it cannot
-/// interfere with the app underneath. The arrow is a Core Animation shape, which
-/// makes fast movement cheap: the engine can update it at event rate without
-/// invalidating any SwiftUI view.
+/// The arrow is the system arrow image, tinted with DualPoint's electric blue.
+/// Using `NSCursor.arrow.image` and its hotspot keeps it exactly the same size
+/// as the real cursor; the overlay is transparent, non-activating and ignores
+/// mouse events so it cannot disturb the app underneath.
 @MainActor
 final class InterimCursorOverlay {
-    /// The electric blue from the app icon. The interim cursor has to read as
-    /// part of DualPoint, not as another system cursor.
     private static let cursorColor = NSColor(
         srgbRed: 0.36,
         green: 0.55,
@@ -21,27 +17,19 @@ final class InterimCursorOverlay {
     )
 
     private let window: OverlayWindow
-    private let cursorLayer = CAShapeLayer()
-    private let contentView: FlippedView
+    private let pointerView = PointerView(frame: .zero)
     private var screenObserver: NSObjectProtocol?
     private var currentPoint: CGPoint?
-    /// Global CoreGraphics union of every screen, top-left origin.
+    /// Global Core Graphics union of every screen, top-left origin.
     private var screenUnion: CGRect = .zero
 
-    private static let arrowSize = CGSize(width: 22, height: 30)
-    /// Empty room around the arrow inside its layer bounds for the stroke and
-    /// glow. The hotspot is the arrow tip at this inset.
-    private static let arrowInset: CGFloat = 10
-
     init() {
-        contentView = FlippedView(frame: .zero)
         window = OverlayWindow(
             contentRect: .zero,
             styleMask: .borderless,
             backing: .buffered,
             defer: false
         )
-
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
@@ -57,11 +45,7 @@ final class InterimCursorOverlay {
             .stationary,
             .ignoresCycle
         ]
-        window.contentView = contentView
-
-        contentView.wantsLayer = true
-        contentView.layer?.masksToBounds = false
-        configureCursorLayer()
+        window.contentView = pointerView
 
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
@@ -72,6 +56,7 @@ final class InterimCursorOverlay {
                 self?.refreshScreenGeometry()
             }
         }
+        refreshScreenGeometry()
     }
 
     deinit {
@@ -83,130 +68,46 @@ final class InterimCursorOverlay {
     // MARK: - Visibility
 
     func show(_ cursor: InterimCursor) {
-        let wasVisible = window.isVisible
         currentPoint = cursor.point
-
-        if !wasVisible {
+        if !window.isVisible {
             refreshScreenGeometry()
-            cursorLayer.removeAllAnimations()
-            cursorLayer.opacity = 1
-            window.alphaValue = 0
             window.orderFrontRegardless()
         }
-
-        moveLayer(to: cursor.point, animated: false)
-
-        // Movement can restart while the fade-out is still running. A new
-        // animation to 1 wins over it; setting alpha directly could be
-        // overwritten by the running animator and leave the ghost invisible.
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = wasVisible ? 0.10 : 0.14
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            window.animator().alphaValue = 1
-        }
+        moveView(to: cursor.point)
     }
 
+    /// Hiding is immediate. A delayed fade could leave a second pointer on
+    /// screen after the real cursor has already taken over.
     func hide() {
-        guard window.isVisible else { return }
         currentPoint = nil
-        cursorLayer.removeAllAnimations()
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.12
-            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            window.animator().alphaValue = 0
-        } completionHandler: { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self, self.currentPoint == nil else { return }
-                self.window.orderOut(nil)
-                self.window.alphaValue = 1
-            }
-        }
+        window.orderOut(nil)
     }
 
-    /// Keeps the overlay current if a display connects while a ghost is up.
-    /// The engine normally hides the ghost on a configuration change; this is
-    /// only a safety net.
+    /// Keeps the overlay correct if a display connects while a pointer is up.
+    /// The engine normally hides it on a configuration change; this is a safety net.
     func refreshScreenGeometry() {
         let geometry = Self.currentScreenGeometry()
         screenUnion = geometry.union
-        guard window.frame != geometry.windowFrame else { return }
-        window.setFrame(geometry.windowFrame, display: false)
+        if window.frame != geometry.windowFrame {
+            window.setFrame(geometry.windowFrame, display: false)
+        }
+        let contentRect = window.contentRect(forFrameRect: window.frame)
+        pointerView.frame = NSRect(origin: .zero, size: contentRect.size)
         if let point = currentPoint {
-            moveLayer(to: point, animated: false)
+            moveView(to: point)
         }
-    }
-
-    // MARK: - Rendering
-
-    private func configureCursorLayer() {
-        let path = Self.arrowPath()
-
-        cursorLayer.path = path
-        cursorLayer.fillColor = Self.cursorColor.cgColor
-        cursorLayer.strokeColor = NSColor.white.withAlphaComponent(0.92).cgColor
-        cursorLayer.lineWidth = 1.3
-        cursorLayer.lineJoin = .round
-        cursorLayer.lineCap = .round
-        cursorLayer.fillRule = .nonZero
-        cursorLayer.masksToBounds = false
-
-        cursorLayer.shadowColor = Self.cursorColor.cgColor
-        cursorLayer.shadowOpacity = 0.85
-        cursorLayer.shadowRadius = 7
-        cursorLayer.shadowOffset = .zero
-
-        cursorLayer.anchorPoint = .zero
-        cursorLayer.bounds = CGRect(
-            x: 0,
-            y: 0,
-            width: Self.arrowSize.width + Self.arrowInset * 2,
-            height: Self.arrowSize.height + Self.arrowInset * 2
-        )
-        contentView.layer?.addSublayer(cursorLayer)
-    }
-
-    private func moveLayer(to point: CGPoint, animated: Bool) {
-        let local = CGPoint(
-            x: point.x - screenUnion.minX,
-            y: point.y - screenUnion.minY
-        )
-        let target = CGPoint(
-            x: local.x - Self.arrowInset,
-            y: local.y - Self.arrowInset
-        )
-
-        if animated {
-            CATransaction.begin()
-            CATransaction.setAnimationDuration(0.10)
-            CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
-            cursorLayer.position = target
-            CATransaction.commit()
-        } else {
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            cursorLayer.position = target
-            CATransaction.commit()
-        }
-    }
-
-    /// A crisp, classic arrow. It is drawn with the hotspot at the layer inset
-    /// so the shape never sits on a half pixel at 1× or 2×.
-    private static func arrowPath() -> CGPath {
-        let p = arrowInset
-        let path = CGMutablePath()
-        path.move(to: CGPoint(x: p, y: p))
-        path.addLine(to: CGPoint(x: p, y: p + 21))
-        path.addLine(to: CGPoint(x: p + 5.0, y: p + 16.6))
-        path.addLine(to: CGPoint(x: p + 8.4, y: p + 23.8))
-        path.addLine(to: CGPoint(x: p + 12.1, y: p + 22.1))
-        path.addLine(to: CGPoint(x: p + 8.7, y: p + 15.0))
-        path.addLine(to: CGPoint(x: p + 14.8, y: p + 15.0))
-        path.closeSubpath()
-        return path
     }
 
     // MARK: - Geometry
+
+    private func moveView(to point: CGPoint) {
+        // The content view is flipped, so local coordinates use the same
+        // top-left origin as Core Graphics.
+        pointerView.pointerPosition = CGPoint(
+            x: point.x - screenUnion.minX,
+            y: point.y - screenUnion.minY
+        )
+    }
 
     private struct ScreenGeometry {
         let union: CGRect
@@ -215,8 +116,7 @@ final class InterimCursorOverlay {
 
     private static func currentScreenGeometry() -> ScreenGeometry {
         let screens = NSScreen.screens
-        guard let primary = screens.first(where: { $0.frame.origin == .zero })
-            ?? screens.first else {
+        guard let primary = screens.first(where: { $0.frame.origin == .zero }) ?? screens.first else {
             return ScreenGeometry(union: .zero, windowFrame: .zero)
         }
         let primaryHeight = primary.frame.height
@@ -232,8 +132,6 @@ final class InterimCursorOverlay {
             union = union.map { $0.union(cgRect) } ?? cgRect
         }
         let cgUnion = union ?? .zero
-        // Cocoa's window coordinates are bottom-left based on the primary
-        // screen; the union keeps the same size, only its origin flips.
         let windowFrame = CGRect(
             x: cgUnion.minX,
             y: primaryHeight - cgUnion.maxY,
@@ -244,14 +142,64 @@ final class InterimCursorOverlay {
     }
 }
 
-// MARK: - Window plumbing
+// MARK: - Pointer drawing
 
-/// A flipped, transparent view so local overlay coordinates match the
-/// top-left Core Graphics coordinates the engine already uses for cursors.
-private final class FlippedView: NSView {
+/// Draws the tinted system arrow at its natural size.
+private final class PointerView: NSView {
+    private let image = PointerView.tintedArrow()
+    private let hotSpot = NSCursor.arrow.hotSpot
+
+    var pointerPosition: CGPoint = .zero {
+        didSet {
+            setNeedsDisplay(dirtyRect(around: oldValue))
+            setNeedsDisplay(dirtyRect(around: pointerPosition))
+        }
+    }
+
     override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let size = image.size
+        let rect = NSRect(
+            x: pointerPosition.x - hotSpot.x,
+            y: pointerPosition.y - hotSpot.y,
+            width: size.width,
+            height: size.height
+        )
+        image.draw(in: rect)
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    private func dirtyRect(around point: CGPoint) -> NSRect {
+        let size = image.size
+        return NSRect(
+            x: point.x - hotSpot.x - 2,
+            y: point.y - hotSpot.y - 2,
+            width: size.width + 4,
+            height: size.height + 4
+        )
+    }
+
+    private static func tintedArrow() -> NSImage {
+        let arrow = NSCursor.arrow.image
+        let image = NSImage(size: arrow.size)
+        image.lockFocus()
+        let rect = NSRect(origin: .zero, size: arrow.size)
+        arrow.draw(in: rect)
+        cursorColor.withAlphaComponent(0.9).setFill()
+        rect.fill(using: .sourceAtop)
+        image.unlockFocus()
+        return image
+    }
+
+    private static var cursorColor: NSColor {
+        NSColor(srgbRed: 0.36, green: 0.55, blue: 1.0, alpha: 1.0)
+    }
 }
+
+// MARK: - Window plumbing
 
 private final class OverlayWindow: NSWindow {
     override var canBecomeKey: Bool { false }

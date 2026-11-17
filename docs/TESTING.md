@@ -93,6 +93,13 @@ often the blue cursor appears when both devices move, and whether an unmatched
 trackpad event is labelled as mouse. Do not mark these rows as working from the
 automated suite alone.
 
+**Reported failure on the previous build:** the blue arrow was drawn larger than
+the system cursor, appeared only after the second device stopped, then followed
+only one physical device with an offset, and the two-pointer state never ended
+because the previous main device kept taking over the blue role. The redesign
+uses HID seizure for external devices, a system-sized tinted arrow and no role
+swap. These rows stay pending until the user confirms them on the real hardware.
+
 Rows marked *pending* must not be described as working until they are confirmed
 on real hardware.
 
@@ -108,16 +115,18 @@ Run the app from Terminal so it inherits the existing TCC grants:
 2. Move the trackpad to a spot on the built-in display. Pause.
 3. Move the mouse. The cursor should return to the mouse's own last position.
 4. Move the trackpad again. The cursor should return to the trackpad's spot.
-5. Confirm Input Monitoring and Accessibility are both granted.
+5. Confirm Input Monitoring is granted. Accessibility is needed only if the
+   built-in trackpad is the second device.
 6. Move both devices at the same time. The device that moved first keeps the
-   real cursor; the other gets the blue arrow at its own position.
-7. Keep moving the second device. The blue arrow must move independently while
-   the real cursor stays with the first device.
-8. Stop the second device. After the settle delay and cooldown, the real cursor
-   must move to the blue position and replace it.
-9. Move both again but keep the first device moving after the handover. The
-   first device should become the blue arrow at the position the real cursor
-   just left, without a flash.
+   real cursor; the other gets a blue arrow the same size as the system cursor,
+   at its own saved position.
+7. Keep moving the second device. The blue arrow must follow only that device,
+   with no visible offset from the real pointer's movement, while the first
+   device keeps the real cursor.
+8. Stop the second device. After the set delay the real cursor must move to the
+   blue position, the blue arrow must disappear, and only one cursor may remain.
+9. Move both again but keep the first device moving after the handover. No new
+   blue arrow may appear; switching continues with one real cursor.
 10. Set Handover delay to 0 s and repeat step 8; then set it to 3 s and repeat.
 11. Click with the second device while its blue cursor is visible. The click must
     land at the blue position and the real cursor must commit there.
@@ -157,8 +166,9 @@ weakness described in `docs/ARCHITECTURE.md`.
 ## Regression notes
 
 - Rebuilding an ad-hoc signed bundle can invalidate Input Monitoring and
-  Accessibility. If no devices appear, grant permission again; if the blue
-  cursor never appears, grant Accessibility again.
+  Accessibility. If no devices appear, grant Input Monitoring again. External
+  devices then need no further permission; grant Accessibility only for the
+  built-in trackpad fallback.
 - The debug snapshot build has no normal app lifecycle; its status text may read
   “Ready · waiting for input” even when the installed app is switching normally.
 - A rebuilt copy must be re-tested with the checklist above before a release.

@@ -44,6 +44,7 @@ public final class DualPointEngine: ObservableObject {
     private let displayManager = DisplayManager()
     private let hidMonitor = HIDMonitor()
     private let eventTap = EventTapMonitor()
+    private let secondaryMonitor = SecondaryPointerMonitor()
 
     private var activityTable = ActivityTable()
     private var connectedHID: [String: HIDDeviceInfo] = [:]
@@ -63,6 +64,9 @@ public final class DualPointEngine: ObservableObject {
 
     private var arbiter: InterimCursorArbiter
     private var interimPoint: CGPoint?
+    /// True while the blue device is exclusively seized through raw HID.
+    /// Its movement then arrives from SecondaryPointerMonitor, not from the tap.
+    private var interimIsSeized = false
     private var interimTimer: Timer?
     private var unmatchedStreak = 0
     private var lastUnmatchedAt: UInt64 = 0
@@ -120,6 +124,7 @@ public final class DualPointEngine: ObservableObject {
         removeObservers()
 
         eventTap.stop()
+        secondaryMonitor.stop()
         hidMonitor.stop()
         displayManager.stop()
 
@@ -128,6 +133,7 @@ public final class DualPointEngine: ObservableObject {
         cachedActiveAnchor = nil
         arbiter.reset()
         lastAccessibilityTrusted = false
+        interimIsSeized = false
         interimDeviceID = nil
         clearSwitchCandidate()
         isMonitoring = false
@@ -162,20 +168,35 @@ public final class DualPointEngine: ObservableObject {
         return devices.first { $0.id == interimDeviceID }
     }
 
-    /// Accessibility plus an active event tap is what allows the interim
-    /// device's movement to be consumed instead of steering the real cursor.
+    /// Accessibility plus an active event tap. This is the fallback used when
+    /// the second device is the built-in trackpad, which cannot be seized.
     /// This ignores the user's on/off setting so the UI can describe the
     /// permission itself.
     public var canSuppressPointerEvents: Bool {
         permissions.accessibilityTrusted && eventTap.canSuppressEvents
     }
 
+    /// An external device can be seized through raw HID. The built-in trackpad
+    /// needs the event-tap fallback instead.
+    public var canIsolateExternalDevices: Bool {
+        secondaryMonitor.canSeizeDevices
+    }
+
     public var supportsInterimCursor: Bool {
-        interimCursorEnabled && canSuppressPointerEvents
+        interimCursorEnabled && (canIsolateExternalDevices || canSuppressPointerEvents)
     }
 
     private var canUseInterimCursor: Bool {
         isSwitchingEnabled && supportsInterimCursor
+    }
+
+    /// Whether this particular device can be isolated while it owns the blue
+    /// pointer. The built-in trackpad has no raw HID reports to seize.
+    private func canIsolate(deviceID: String) -> Bool {
+        if deviceID == DeviceIdentity.builtInTrackpadID {
+            return canSuppressPointerEvents
+        }
+        return canIsolateExternalDevices || canSuppressPointerEvents
     }
 
     public func device(withID id: String) -> PointingDevice? {
@@ -469,6 +490,20 @@ public final class DualPointEngine: ObservableObject {
             self?.handleEventTapState(state)
         }
 
+        secondaryMonitor.onMovement = { [weak self] movement in
+            self?.handleSecondaryMovement(movement)
+        }
+        secondaryMonitor.onScroll = { [weak self] scroll in
+            self?.handleSecondaryScroll(scroll)
+        }
+        secondaryMonitor.onButton = { [weak self] button in
+            self?.handleSecondaryButton(button)
+        }
+        secondaryMonitor.onError = { [weak self] message in
+            self?.lastErrorMessage = message
+            self?.log.error("Interim", message)
+        }
+
         displayManager.onChange = { [weak self] displays in
             self?.handleDisplayChange(displays)
         }
@@ -507,8 +542,10 @@ public final class DualPointEngine: ObservableObject {
                 hidMonitor.stop()
                 hidMonitor.start()
             }
+            secondaryMonitor.start()
         } else if hidMonitor.isOpen {
             teardownHIDMonitorForPermissionLoss()
+            secondaryMonitor.stop()
         }
 
         if snapshot.listenEventAccessGranted, !eventTap.state.isRunning {
@@ -732,13 +769,18 @@ public final class DualPointEngine: ObservableObject {
                 // While the interim cursor is visible, only the pointer event
                 // may commit it. HID activity must not steal the handover and
                 // warp the real cursor to a different saved position first.
-                let interimExists = arbiter.interimDeviceID != nil
-                if interimExists || canUseInterimCursor {
-                    if interimExists
-                        || arbiter.canStartInterim(for: activity.deviceID, at: now) {
-                        clearSwitchCandidate()
-                        return
-                    }
+                if arbiter.interimDeviceID != nil {
+                    clearSwitchCandidate()
+                    return
+                }
+                // Leave the overlap to the pointer event, which starts the
+                // interim cursor. If this device cannot be isolated, fall
+                // through to the normal single-device switch instead.
+                if canUseInterimCursor,
+                   canIsolate(deviceID: activity.deviceID),
+                   arbiter.canStartInterim(for: activity.deviceID, at: now) {
+                    clearSwitchCandidate()
+                    return
                 }
             }
         } else if activity.isButtonPress,
@@ -810,6 +852,7 @@ public final class DualPointEngine: ObservableObject {
         //    interim cursor instead of stealing the real one.
         if event.isMovement,
            canUseInterimCursor,
+           canIsolate(deviceID: deviceID),
            arbiter.canStartInterim(for: deviceID, at: now),
            let device = devices.first(where: { $0.id == deviceID }),
            device.isManaged,
@@ -817,14 +860,10 @@ public final class DualPointEngine: ObservableObject {
                settings: store.state.settings(for: deviceID),
                displays: displays
            ) {
-            let point = CursorGeometry.movedPoint(
-                from: start,
-                by: CGSize(width: CGFloat(event.deltaX), height: CGFloat(event.deltaY)),
-                in: displays
-            )
             beginInterimCursor(
                 deviceID: deviceID,
-                point: point,
+                startPoint: start,
+                firstDelta: CGSize(width: CGFloat(event.deltaX), height: CGFloat(event.deltaY)),
                 reason: "both devices are moving"
             )
             return .consume
@@ -873,6 +912,12 @@ public final class DualPointEngine: ObservableObject {
             return .pass
         }
 
+        if interimIsSeized {
+            // A seized device cannot move the real pointer. Its raw reports
+            // drive the ghost; any late event still has to be dropped.
+            return event.isMovement ? .consume : .pass
+        }
+
         if event.isMovement {
             let start = interimPoint ?? CursorController.currentPosition()
             let point = CursorGeometry.movedPoint(
@@ -901,14 +946,39 @@ public final class DualPointEngine: ObservableObject {
 
     // MARK: - Interim cursor
 
-    private func beginInterimCursor(deviceID: String, point: CGPoint, reason: String) {
+    private func beginInterimCursor(
+        deviceID: String,
+        startPoint: CGPoint,
+        firstDelta: CGSize,
+        reason: String
+    ) {
         guard canUseInterimCursor,
               deviceID != activeDeviceID,
               let device = devices.first(where: { $0.id == deviceID }),
               device.isManaged else {
             return
         }
+
+        // Close any previous ghost and return its device before choosing a new
+        // one. Only external HID devices can be seized; the built-in trackpad
+        // uses the event-tap fallback.
         hideInterimCursor(persist: false, announce: false)
+        guard canIsolate(deviceID: deviceID) else {
+            log.warning("Interim", "No way to isolate \(device.name); keeping one real cursor")
+            return
+        }
+        let seized = deviceID != DeviceIdentity.builtInTrackpadID
+            && (connectedHID[deviceID].map { secondaryMonitor.seize(deviceUniqueID: $0.uniqueID) } ?? false)
+
+        // A seized device's first physical movement never reaches the event tap,
+        // so the blue pointer starts exactly at this device's saved position.
+        // On the fallback path the event that detected the overlap did move the
+        // real pointer, so apply that delta to the ghost too.
+        let point = seized
+            ? startPoint
+            : CursorGeometry.movedPoint(from: startPoint, by: firstDelta, in: displays)
+
+        interimIsSeized = seized
         arbiter.startInterim(deviceID)
         interimDeviceID = deviceID
         interimPoint = point
@@ -920,8 +990,70 @@ public final class DualPointEngine: ObservableObject {
         ))
         log.info(
             "Interim",
-            "\(device.name) shows an interim cursor at \(Self.format(point)); \(reason)"
+            "\(device.name) shows an interim cursor at \(Self.format(point)); \(reason); \(seized ? "raw HID" : "event tap")"
         )
+    }
+
+    /// Raw HID counts are not screen points. This is DoubleMouse's gain curve:
+    /// a linear ramp to 2x for fast strokes, with Y flipped into Core Graphics'
+    /// top-left coordinate space.
+    private static func scaledRawDelta(_ delta: CGPoint) -> CGSize {
+        let gain = 1 + min(hypot(delta.x, delta.y), 40) / 40
+        return CGSize(width: delta.x * gain, height: -delta.y * gain)
+    }
+
+    private func handleSecondaryMovement(_ movement: SecondaryPointerDelta) {
+        guard isRunning,
+              let deviceID = arbiter.interimDeviceID,
+              interimIsSeized,
+              connectedHID[deviceID]?.uniqueID == movement.deviceUniqueID,
+              let point = interimPoint else {
+            return
+        }
+        let now = Clock.nowNanoseconds()
+        arbiter.noteMovement(deviceID, at: now)
+        let next = CursorGeometry.movedPoint(
+            from: point,
+            by: Self.scaledRawDelta(movement.delta),
+            in: displays
+        )
+        moveInterimCursor(to: next)
+    }
+
+    private func handleSecondaryScroll(_ scroll: SecondaryPointerScroll) {
+        guard isRunning,
+              let deviceID = arbiter.interimDeviceID,
+              interimIsSeized,
+              connectedHID[deviceID]?.uniqueID == scroll.deviceUniqueID,
+              let point = interimPoint else {
+            return
+        }
+        CursorController.scroll(at: point, horizontal: Int64(scroll.delta.x), vertical: Int64(scroll.delta.y))
+    }
+
+    private func handleSecondaryButton(_ button: SecondaryPointerButton) {
+        guard isRunning,
+              let deviceID = arbiter.interimDeviceID,
+              interimIsSeized,
+              connectedHID[deviceID]?.uniqueID == button.deviceUniqueID,
+              let point = interimPoint else {
+            return
+        }
+        let mouseButton: CGMouseButton
+        switch button.usage {
+        case 2: mouseButton = .right
+        case 3: mouseButton = .center
+        default: mouseButton = .left
+        }
+
+        if button.isPressed {
+            // A click is an explicit commitment. Hand the real cursor over to
+            // the blue position, release the device, then deliver the click.
+            adoptInterimCursor(at: Clock.nowNanoseconds(), reason: "button press")
+            CursorController.click(at: point, button: mouseButton, isPressed: true)
+        } else {
+            CursorController.click(at: CursorController.currentPosition(), button: mouseButton, isPressed: false)
+        }
     }
 
     private func moveInterimCursor(to point: CGPoint) {
@@ -942,6 +1074,8 @@ public final class DualPointEngine: ObservableObject {
             self.persist(anchor: anchor, for: deviceID)
         }
         let wasActive = arbiter.interimDeviceID != nil || interimPoint != nil
+        secondaryMonitor.release()
+        interimIsSeized = false
         arbiter.cancelInterim()
         interimDeviceID = nil
         interimPoint = nil
@@ -996,9 +1130,6 @@ public final class DualPointEngine: ObservableObject {
 
         let outgoingID = activeDeviceID
         let outgoingPoint = CursorController.currentPosition()
-        let outgoingRecentlyMoving = outgoingID.map {
-            arbiter.isRecentlyMoving($0, at: now)
-        } ?? false
 
         if let outgoingID,
            let outgoingAnchor = CursorGeometry.anchor(for: outgoingPoint, in: displays) {
@@ -1016,30 +1147,15 @@ public final class DualPointEngine: ObservableObject {
         activeDeviceID = interimID
         cachedActiveAnchor = interimAnchor
         clearSwitchCandidate()
-        hideInterimCursor(persist: false, announce: false)
+        // Releases the seized device and removes the blue pointer. There is
+        // exactly one cursor from here on: the real one, at the blue position.
+        hideInterimCursor(persist: false)
         rebuildDevices()
 
         log.info(
             "Interim",
-            "\(name) took over the real cursor at \(Self.format(point)) (\(reason))\(didWarp ? ", warped" : "")"
+            "\(name) took over the real cursor at \(Self.format(point)) (\(reason))\(didWarp ? ", warped" : ""); dual pointers removed"
         )
-
-        // If the previous main device is still moving, it becomes the new
-        // interim cursor at the position the real cursor just left. The
-        // cooldown then prevents an immediate second handover. Moving the same
-        // overlay there avoids a visible flash between the two cursors.
-        if let outgoingID, outgoingID != interimID, outgoingRecentlyMoving,
-           let outgoing = devices.first(where: { $0.id == outgoingID }),
-           outgoing.isManaged,
-           CursorGeometry.isPointOnAnyDisplay(outgoingPoint, displays: displays) {
-            beginInterimCursor(
-                deviceID: outgoingID,
-                point: outgoingPoint,
-                reason: "the previous main device is still moving"
-            )
-        } else {
-            onInterimCursorChange?(nil)
-        }
     }
 
     private static func format(_ point: CGPoint) -> String {
