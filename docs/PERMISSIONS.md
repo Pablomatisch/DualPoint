@@ -1,7 +1,7 @@
 # Permissions and privacy
 
-DualPoint needs one permission for normal operation and never asks for more than
-it uses.
+DualPoint asks for two permissions, and only the first is required for normal
+switching.
 
 ## Input Monitoring
 
@@ -10,12 +10,15 @@ trackpad or the mouse moved the cursor, DualPoint needs to:
 
 1. **List and read HID pointing devices** with `IOHIDManager`
    (`IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)`).
-2. **Observe pointer events** with a listen-only `CGEventTap`
+2. **Observe pointer events** with a `CGEventTap`
    (`CGPreflightListenEventAccess`).
 
 Both checks map to the single **Input Monitoring** switch in System Settings →
-Privacy & Security → Input Monitoring. The event tap is listen-only: DualPoint
-never modifies, suppresses or synthesizes pointer events.
+Privacy & Security → Input Monitoring.
+
+With Input Monitoring but without Accessibility, the tap is listen-only: it
+observes events and passes all of them through. That is enough to identify
+devices and to switch the single real cursor between their saved positions.
 
 If the permission is missing:
 
@@ -28,10 +31,26 @@ effect without a relaunch. “Check Again” in Settings forces an immediate ref
 
 ## Accessibility
 
-Accessibility is **not required for normal operation** and is only requested if
-macOS refuses to create the listen-only event tap even though Input Monitoring is
-granted. This is rare. The permission is never used to read window contents,
-menus or keystrokes.
+Accessibility is required only for **simultaneous cursors**. When two devices
+move at once, DualPoint keeps the real cursor with the first one and draws a blue
+interim cursor for the other. To do that it must:
+
+- Create an active `CGEventTap` (`.defaultTap`), which can drop events.
+- Consume the interim device's movement so it no longer steers the real cursor.
+- Rewrite the location of a click or scroll from the interim device so the event
+  lands at the blue cursor.
+
+`AXIsProcessTrusted()` is the check. Without it DualPoint keeps working exactly
+as before: one real cursor, a normal handover when the other device moves, and a
+visible warning in Settings and Setup that the second cursor is unavailable.
+Nothing is consumed and no events are synthesized.
+
+The permission is never used to read window contents, menus, keystrokes or
+clipboard data.
+
+The app notices a grant while running and restarts the tap once, so the feature
+does not require a relaunch. Grants are tied to the code signature, so a rebuilt
+ad-hoc bundle may need to be enabled again.
 
 ## Launch at login
 
@@ -46,6 +65,7 @@ this to be available.
   from connected pointing devices.
 - Timestamps of HID reports and pointer movement, clicks and scrolls.
 - Display IDs, names, bounds, scale and main/built-in flags.
+- The pointer location, which is needed to save and restore positions.
 
 ## What DualPoint does not read or store
 
@@ -68,18 +88,21 @@ can reveal them, copy the recent log, or open the saved state in Finder.
 
 1. Open System Settings → Privacy & Security → Input Monitoring.
 2. Turn DualPoint off.
-3. Optionally remove `state.json` and the log directory to erase local data.
+3. Optionally do the same under Accessibility.
+4. Optionally remove `state.json` and the log directory to erase local data.
 
 With Input Monitoring revoked, DualPoint no longer sees devices and cannot move
-the cursor.
+the cursor. With only Accessibility revoked, switching and saved positions keep
+working but the second cursor is disabled.
 
 ## Rebuilds and ad-hoc signatures
 
 TCC grants are tied to the code signature. Every rebuilt ad-hoc signed copy can
-require Input Monitoring approval again. Granting it to one copy does not grant
-it to another. For day-to-day use, sign with a stable Developer ID.
+require Input Monitoring and Accessibility approval again. Granting them to one
+copy does not grant them to another. For day-to-day use, sign with a stable
+Developer ID.
 
 Launching from Terminal
 (`./build/DualPoint.app/Contents/MacOS/DualPoint`) inherits the grants of that
-specific binary; launching via `open` after a rebuild may show no devices until
-permission is granted again.
+specific binary; launching via `open` after a rebuild may show no devices or no
+second cursor until permission is granted again.

@@ -7,9 +7,11 @@ device left the cursor. Pick up the trackpad and the pointer returns to where it
 was on the MacBook display; reach for the mouse and it jumps back to its own
 position on the external monitor.
 
-DualPoint manages **one real macOS cursor**. It never draws a second cursor, it
-does not change pointer acceleration, and it does not confine the pointer to a
-display. Drag and drop, gestures, and normal cross-display movement keep working.
+DualPoint manages **one real macOS cursor**. When two devices move at the same
+time, the one that moved first keeps the real cursor and the other gets a blue
+app-drawn cursor until it stops; then the real cursor takes its place. It does
+not change pointer acceleration or confine the pointer to a display, so drag and
+drop, gestures and normal cross-display movement keep working.
 
 ## Features
 
@@ -23,11 +25,13 @@ display. Drag and drop, gestures, and normal cross-display movement keep working
   a device's actual last position always wins.
 - **Display awareness** — disconnecting or rearranging displays updates the
   available targets and rescues a cursor that would be left off-screen.
+- **Simultaneous cursors** — move both devices at once: the first keeps the real
+  cursor, the other moves a blue interim cursor, and the real cursor follows
+  when it settles. The handover delay is adjustable.
 - **Drag protection** — the cursor does not jump away in the middle of a drag.
 - **Guided setup** — a four-step assistant covers permissions, privacy,
   assignments and a real handover test.
-- **Menu bar first** — no Dock icon, no second cursor, automatic launch at login
-  is optional.
+- **Menu bar first** — no Dock icon, and launch at login is optional.
 - **Local-only** — no network access, no keystroke logging, no movement history.
 
 ## Requirements
@@ -35,6 +39,8 @@ display. Drag and drop, gestures, and normal cross-display movement keep working
 - Apple Silicon Mac (arm64)
 - macOS 13 Ventura or newer
 - Input Monitoring permission
+- Accessibility permission for two independently moving cursors (optional;
+  without it both devices still share the real cursor)
 - Command Line Tools (`xcode-select --install`) if you build from source
 
 ## Install from source
@@ -49,10 +55,12 @@ signs it. No Xcode project is required.
 
 On first launch, DualPoint opens the setup assistant. Grant **Input Monitoring**
 in System Settings → Privacy & Security → Input Monitoring, then complete the
-device assignments.
+device assignments. Grant **Accessibility** as well if you want both devices to
+move independent cursors at the same time.
 
 > Because the app is ad-hoc signed, every rebuilt copy can require the Input
-> Monitoring grant again. Sign with your own Developer ID for day-to-day use.
+> Monitoring and Accessibility grants again. Sign with your own Developer ID for
+> day-to-day use.
 
 ## Usage
 
@@ -66,6 +74,8 @@ and quick actions. `Settings` contains the full configuration;
 | Switch positions immediately | Settings → Devices → ••• → Move Cursor Now |
 | Forget a saved position | Settings → Devices → ••• |
 | Pause automatic switching | Panel footer, or Settings → General |
+| Turn the second cursor on or off | Settings → General → Simultaneous cursors |
+| Change the handover delay | Settings → General → Handover delay |
 | Run setup again | Panel → Setup |
 | Quit | Panel footer power button |
 
@@ -73,7 +83,7 @@ and quick actions. `Settings` contains the full configuration;
 
 ```bash
 swift build
-swift run DualPointSelfTest      # 55 assertions
+swift run DualPointSelfTest      # 89 assertions
 swift run DualPointDiagnose list # real hardware inventory
 ```
 
@@ -87,8 +97,9 @@ handover checklist.
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — runtime design, device
   attribution, cursor model, persistence and failure handling.
-- [`docs/PERMISSIONS.md`](docs/PERMISSIONS.md) — why Input Monitoring is needed,
-  what is optional, where data lives and how to revoke access.
+- [`docs/PERMISSIONS.md`](docs/PERMISSIONS.md) — why Input Monitoring and
+  Accessibility are needed, what is optional, where data lives and how to revoke
+  access.
 - [`docs/DESIGN.md`](docs/DESIGN.md) — the visual system, motion and interface
   structure.
 - [`docs/TESTING.md`](docs/TESTING.md) — automated coverage, real hardware
@@ -98,8 +109,8 @@ handover checklist.
 
 | Path | Purpose |
 | --- | --- |
-| `Sources/DualPointCore` | HID detection, attribution, display geometry, switching, persistence |
-| `Sources/DualPoint` | AppKit menu bar app, SwiftUI panels, Settings and Onboarding |
+| `Sources/DualPointCore` | HID detection, attribution, display geometry, switching, interim cursor, persistence |
+| `Sources/DualPoint` | AppKit menu bar app, SwiftUI panels, Settings, Onboarding and the cursor overlay |
 | `Sources/DualPointCLI` | `DualPointDiagnose` hardware diagnostics |
 | `Tests/DualPointCoreTests` | Dependency-free self-test suite |
 | `Scripts` | Build and icon scripts |
@@ -111,6 +122,16 @@ handover checklist.
 - macOS does not label pointer events with a device. DualPoint correlates HID
   reports with system pointer events by timestamp; on Apple Silicon the built-in
   trackpad emits no HID reports and is inferred from unattributed events.
+- The second cursor is drawn by DualPoint, not by macOS. While both devices move
+  at once it can move over any app, but it is not a real system pointer: it does
+  not change hover state, text selection or the window server's cursor until the
+  real cursor is handed over.
+- Suppressing the second device's real movement requires Accessibility. Without
+  it the feature stays off and both devices share the real cursor.
+- True simultaneous trackpad and mouse movement stresses attribution: an
+  unmatched trackpad event can arrive close enough to a mouse report to be
+  labelled as mouse. This build needs a hardware run to confirm how often it
+  happens; see `docs/TESTING.md`.
 - A USB location ID changes when a device is moved to another port. DualPoint
   migrates saved settings when exactly one disconnected record matches the same
   vendor/product, name and kind. Two identical devices that were both

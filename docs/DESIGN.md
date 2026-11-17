@@ -6,7 +6,9 @@ accent, restrained motion and copy that stays out of the way.
 ## Principles
 
 1. **One cursor, one accent.** The interface never competes with the pointer.
-   A single violet accent marks the active thing; everything else is glass.
+   A single violet accent marks the active thing; everything else is glass. The
+   only exception is the app-drawn interim cursor, which uses the electric blue
+   of the app icon so it reads as DualPoint and never as a second system pointer.
 2. **Show state once.** A status appears in one place per screen. The active
    device is marked by the accent edge of its row, not by a second badge.
 3. **Earn every sentence.** Labels are short, sentence case and action-oriented.
@@ -35,6 +37,11 @@ Tokens live in `Sources/DualPoint/Views/Brand.swift`.
 | `surface` 6% white | Quiet fills |
 | `cardGradient` | Cards, from 7.5% to 3.2% white |
 | `panelTint` | Dark translucent menu bar panel |
+| `interim cursor` `#5C8CFF` | The drawn second cursor, taken from the app icon |
+
+The interim cursor is the one place where color is semantic rather than
+decorative: it must be instantly distinguishable from the system pointer while
+staying inside the brand.
 
 All surfaces use continuous corner radii. Cards sit between 14–18 pt; the panel
 uses 22 pt.
@@ -73,6 +80,9 @@ cards, so nothing sits against an edge.
 - `HoverCard` — same glass, with a brighter gradient and edge on hover and a
   stronger accent border for the active device row.
 - `VisualEffectView` — native vibrancy for the Settings sidebar.
+- `InterimCursorOverlay` — a transparent window across all displays with a
+  `CAShapeLayer` arrow: electric-blue fill, 1.3 pt white stroke, soft blue glow.
+  It has no border, no background and no shadow of its own.
 
 ## Motion
 
@@ -84,6 +94,9 @@ cards, so nothing sits against an edge.
 | Onboarding step | spring `response 0.40`, `damping 0.88`, 22–26 pt horizontal slide |
 | Hover | ease-out 0.15 s |
 | Filter chips | ease-out 0.14 s |
+| Interim cursor appear | fade 0.14 s ease-out |
+| Interim cursor hide | fade 0.12 s ease-in |
+| Interim cursor move | layer position only, no SwiftUI invalidation |
 
 ## Screens
 
@@ -98,16 +111,20 @@ the accent edge, and the header no longer repeats a live status.
 
 Four tabs: General, Devices, Activity, About. The sidebar holds the brand,
 status, navigation and — only while setup is incomplete — a “Finish setup” card.
-General covers switching, permissions and login. Devices shows assignment rows
-and a live display map. Activity shows the last switch and a filterable local
-log. About is a short statement of purpose plus version information.
+General covers switching, simultaneous cursors, permissions and login. The
+Simultaneous cursors card holds the on/off toggle, the handover-delay slider and
+a single explanation; the Accessibility warning appears only when the permission
+is missing. Devices shows assignment rows and a live display map. Activity shows
+the last switch and a filterable local log. About is a short statement of purpose
+plus version information.
 
 ### Setup
 
 Four steps: welcome, permission, assignments, test drive. The top bar shows only
 “DualPoint Setup” and “Step *n* of 4”; the page itself carries the heading. The
 test-drive step temporarily enables switching so the handover can be felt before
-setup is committed.
+setup is committed, and it asks the user to move both devices together so the
+blue cursor and the settle handover are exercised.
 
 ## Copy voice
 
@@ -116,5 +133,6 @@ setup is committed.
 - Keep subtitles to one line where possible.
 - Do not repeat the screen title in the header, the card and the footer.
 - Say “restores its last position” rather than explaining anchors.
+- Say “the other gets a blue one” rather than “interim cursor overlay”.
 - Never claim a hardware behavior in the UI that has not been tested; the
   testing status lives in `docs/TESTING.md`.
