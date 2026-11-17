@@ -84,8 +84,6 @@ func render(size: Int) -> NSImage {
     white.setFill()
     front.fill()
 
-    // A small blue notch cut into the front arrow to tie the two marks together.
-    ctx.restoreGraphicsState()
     image.unlockFocus()
     return image
 }

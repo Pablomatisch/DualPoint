@@ -19,6 +19,9 @@ Package.resolved
 *.dSYM.zip
 Resources/AppIcon.iconset/
 
+# Release packages (uploaded as GitHub release assets, not committed)
+dist/
+
 # Logs / local state
 *.log
 *.crash

@@ -4,7 +4,7 @@ DualPoint combines a deterministic core suite, an off-screen UI renderer and a
 manual hardware checklist. This page records what has actually been verified and
 what still needs a physical run.
 
-Last updated: 2026-11-16
+Last updated: 2026-11-17
 
 ## Environment
 
@@ -39,6 +39,30 @@ toolchain has no XCTest. It covers:
   defaults for unknown devices, identity migration from an old connection key.
 - **PointingDevice** — managed-state rules and assignment descriptions.
 
+## Release 1.0.0 verification
+
+Prepared from `main` at `8e1c333` on an Apple M3 running macOS 27.2.
+
+| Check | Result |
+| --- | --- |
+| Clean release build via `./Scripts/build-app.sh` | Passed |
+| `swift run DualPointSelfTest` | 55 passed, 0 failed |
+| Bundle identifier `com.dualpoint.DualPoint` | Verified in the built `Info.plist` |
+| Bundle version `1.0.0`, build `1` | Verified in the built `Info.plist` |
+| `LSMinimumSystemVersion` 13.0 | Verified in the built `Info.plist` |
+| Architecture arm64 | Verified with `lipo -archs` |
+| Ad-hoc signature valid | `codesign --verify --deep --strict` passed |
+| Hardened Runtime | Not enabled; no Developer ID certificate available |
+| Notarization | Not performed; no Developer ID certificate available |
+| Gatekeeper `spctl -a -t install` | Rejected, expected for an ad-hoc signed build |
+| DMG mounts, contains app and Applications link | Verified |
+| App copied from DMG keeps a valid signature | Verified |
+| ZIP integrity (`unzip -t`) | Verified |
+| SHA-256 checksums | Written to `dist/SHA256SUMS.txt` |
+| Device-handover checklist on real hardware | Still pending; see below |
+
+A clean build emits linker warnings about missing Command Line Tools framework search paths. The build itself succeeds and the resulting app is valid.
+
 ## UI verification
 
 Debug builds render every screen off-screen when `DUALPOINT_SNAPSHOT_DIR` is set:
@@ -68,10 +92,10 @@ needed. Layout was checked for:
 | Display inventory and UUIDs | Verified |
 | Menu bar icon opens and closes the panel | Verified with synthetic clicks on a clean launch |
 | USB location-ID migration after reconnecting on another port | Verified against the real state file |
-| Trackpad → mouse handover | **Pending on the current build** |
-| Mouse → trackpad handover | **Pending on the current build** |
-| Cursor over the menu bar / panel does not oscillate | **Pending on the current build** |
-| Sleep/wake and display hot-plug | **Pending on the current build** |
+| Trackpad → mouse handover | **Pending for 1.0.0** |
+| Mouse → trackpad handover | **Pending for 1.0.0** |
+| Cursor over the menu bar / panel does not oscillate | **Pending for 1.0.0** |
+| Sleep/wake and display hot-plug | **Pending for 1.0.0** |
 | Launch at login from `/Applications` | **Pending** |
 
 Rows marked *pending* must not be described as working until they are confirmed

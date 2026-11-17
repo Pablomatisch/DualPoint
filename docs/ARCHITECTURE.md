@@ -201,6 +201,12 @@ Settings window and the default app menu.
   every Settings tab and all onboarding steps off-screen to PNG. This is how the
   layout was verified without Screen Recording permission.
 
+## Build and packaging
+
+DualPoint is built with SwiftPM through `Scripts/build-app.sh`. The script compiles the release product, assembles `build/DualPoint.app`, copies `Info.plist` and the application icon, and ad-hoc signs the bundle. No Xcode project is required. The declared minimum version is macOS 13 and the product is built for arm64.
+
+Release 1.0.0 is packaged as a DMG (application plus an Applications symlink and a drag-and-drop background) and as a ZIP (application plus a short install note). Checksums are written to `dist/SHA256SUMS.txt`. The 1.0.0 build is ad-hoc signed; it is not Developer-ID signed and not notarized. TCC grants are tied to the code signature, so changing the signature or rebuilding from source can require Input Monitoring to be granted again.
+
 ## Failure handling
 
 | Failure | Behavior |
