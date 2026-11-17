@@ -45,6 +45,7 @@ final class AppModel: ObservableObject {
 
     private var settingsWindowController: NSWindowController?
     private var onboardingWindowController: NSWindowController?
+    private var interimCursorOverlay: InterimCursorOverlay?
     private var hasStarted = false
 
     private init() {}
@@ -54,6 +55,17 @@ final class AppModel: ObservableObject {
     func start() {
         guard !hasStarted else { return }
         hasStarted = true
+
+        let overlay = InterimCursorOverlay()
+        interimCursorOverlay = overlay
+        engine.onInterimCursorChange = { [weak overlay] cursor in
+            if let cursor {
+                overlay?.show(cursor)
+            } else {
+                overlay?.hide()
+            }
+        }
+
         engine.start()
         refreshLoginItem()
 
@@ -67,10 +79,16 @@ final class AppModel: ObservableObject {
     func stop() {
         guard hasStarted else { return }
         hasStarted = false
+        engine.onInterimCursorChange = nil
+        interimCursorOverlay?.hide()
+        interimCursorOverlay = nil
         engine.stop()
     }
 
     func quit() {
+        engine.onInterimCursorChange = nil
+        interimCursorOverlay?.hide()
+        interimCursorOverlay = nil
         engine.stop()
         NSApp.terminate(nil)
     }

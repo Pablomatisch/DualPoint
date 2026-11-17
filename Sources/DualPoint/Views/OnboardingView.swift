@@ -163,8 +163,8 @@ struct OnboardingView: View {
             ) {
                 featureCard(
                     symbol: "cursorarrow.rays",
-                    title: "One real cursor",
-                    detail: "No second cursor or display boundaries."
+                    title: "Move both at once",
+                    detail: "The first device keeps the real cursor; the other gets a blue one."
                 )
                 featureCard(
                     symbol: "display.2",
@@ -209,10 +209,10 @@ struct OnboardingView: View {
                         .foregroundStyle(Brand.warning)
                 }
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("One permission. Nothing collected.")
+                    Text("One required. One for two cursors.")
                         .font(.system(size: 26, weight: .bold, design: .rounded))
                         .foregroundStyle(Brand.textPrimary)
-                    Text("macOS does not say which device moved the pointer. DualPoint matches pointer events to the physical device locally.")
+                    Text("Input Monitoring lets DualPoint match pointer events to the physical device. Accessibility is optional: it lets a second device move the blue cursor independently while both are in use.")
                         .font(.system(size: 11.5))
                         .foregroundStyle(Brand.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -233,7 +233,7 @@ struct OnboardingView: View {
 
             GlassCard(
                 title: "Permission status",
-                subtitle: "Input Monitoring is all DualPoint needs.",
+                subtitle: "Input Monitoring is required. Accessibility adds the second cursor.",
                 symbol: "lock.shield.fill"
             ) {
                 StatusRow(
@@ -252,13 +252,23 @@ struct OnboardingView: View {
                     isGood: engine.permissions.eventTapAvailable
                 )
 
+                StatusRow(
+                    title: "Accessibility",
+                    detail: engine.canSuppressPointerEvents
+                        ? "Granted. Both devices can move independently."
+                        : (engine.permissions.accessibilityTrusted
+                            ? "Granted, but the pointer tap is listen-only. Restart DualPoint."
+                            : "Optional. Needed only when both devices move at once."),
+                    isGood: engine.canSuppressPointerEvents
+                )
+
                 HStack(spacing: 8) {
                     Button("Grant Input Monitoring") {
                         engine.requestInputMonitoring()
                     }
                     .buttonStyle(PrimaryButtonStyle(compact: true))
 
-                    Button("Open System Settings") {
+                    Button("Open Input Monitoring") {
                         engine.openInputMonitoringSettings()
                     }
                     .buttonStyle(SecondaryButtonStyle(compact: true))
@@ -268,6 +278,21 @@ struct OnboardingView: View {
                     }
                     .buttonStyle(GhostButtonStyle(compact: true))
                     Spacer(minLength: 0)
+                }
+
+                if !engine.canSuppressPointerEvents {
+                    HStack(spacing: 8) {
+                        Button("Enable Accessibility") {
+                            engine.requestAccessibility()
+                        }
+                        .buttonStyle(SecondaryButtonStyle(compact: true))
+
+                        Button("Open Accessibility Settings") {
+                            engine.openAccessibilitySettings()
+                        }
+                        .buttonStyle(GhostButtonStyle(compact: true))
+                        Spacer(minLength: 0)
+                    }
                 }
 
                 if !canFinish {
@@ -283,7 +308,7 @@ struct OnboardingView: View {
                 }
             }
 
-            Text("Permission is tied to the app signature, so rebuilding may require granting it again.")
+            Text("Permissions are tied to the app signature, so rebuilding may require granting them again.")
                 .font(.system(size: 10))
                 .foregroundStyle(Brand.textTertiary)
         }
@@ -398,7 +423,19 @@ struct OnboardingView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     instructionRow(number: "1", text: "Move the trackpad. The cursor goes to the MacBook display.")
                     instructionRow(number: "2", text: "Move the mouse. The cursor returns to its own display.")
-                    instructionRow(number: "3", text: "Switch back and forth to confirm.")
+                    instructionRow(number: "3", text: "Move both together. The first device keeps the real cursor; the other gets a blue one, then the real cursor follows once it stops.")
+                }
+
+                if engine.interimCursorEnabled && !engine.supportsInterimCursor {
+                    HStack(alignment: .top, spacing: 7) {
+                        Image(systemName: "info.circle.fill")
+                            .foregroundStyle(Brand.accent)
+                            .font(.system(size: 11))
+                        Text("Without Accessibility and an active pointer tap, both devices share the real cursor.")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Brand.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
 
                 if !engine.managedDevices.isEmpty && engine.isSwitchingEnabled {

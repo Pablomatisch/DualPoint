@@ -300,8 +300,72 @@ private struct GeneralSettingsTab: View {
             }
 
             GlassCard(
+                title: "Simultaneous cursors",
+                subtitle: "Move both devices at once. The first one keeps the real cursor.",
+                symbol: "cursorarrow.rays"
+            ) {
+                Toggle(isOn: Binding(
+                    get: { engine.interimCursorEnabled },
+                    set: { engine.setInterimCursorEnabled($0) }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Show a second cursor")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Brand.textPrimary)
+                        Text("The other device gets a blue cursor until it stops.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Brand.textSecondary)
+                    }
+                }
+                .toggleStyle(.switch)
+                .tint(Brand.accent)
+
+                if engine.interimCursorEnabled {
+                    DividerLine()
+
+                    HStack(spacing: 10) {
+                        Text("Handover delay")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(Brand.textSecondary)
+                        Spacer(minLength: 8)
+                        Text(String(format: "%.1f s", engine.handoverCooldown))
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Brand.textPrimary)
+                            .monospacedDigit()
+                    }
+
+                    Slider(
+                        value: Binding(
+                            get: { engine.handoverCooldown },
+                            set: { engine.setHandoverCooldown($0) }
+                        ),
+                        in: 0...3,
+                        step: 0.1
+                    )
+                    .tint(Brand.accent)
+
+                    Text("After the second device stops, the real cursor moves to it once this delay has passed. Raise it if fast switching between devices feels too eager.")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Brand.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if engine.interimCursorEnabled && !engine.supportsInterimCursor {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "lock.open.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Brand.warning)
+                        Text("The second cursor cannot move independently until Accessibility is granted and pointer monitoring is active.")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Brand.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+
+            GlassCard(
                 title: "Permissions",
-                subtitle: "Input Monitoring is all DualPoint needs.",
+                subtitle: "Input Monitoring finds devices. Accessibility powers the second cursor.",
                 symbol: "lock.shield.fill"
             ) {
                 StatusRow(
@@ -320,28 +384,37 @@ private struct GeneralSettingsTab: View {
                     )
                 }
 
-                if !engine.permissions.accessibilityTrusted && !engine.permissions.eventTapAvailable {
-                    StatusRow(
-                        title: "Accessibility",
-                        detail: "Only needed if macOS refuses the event tap.",
-                        isGood: false
-                    )
-                }
+                StatusRow(
+                    title: "Accessibility",
+                    detail: engine.canSuppressPointerEvents
+                        ? "Granted. Both cursors can move independently."
+                        : (engine.permissions.accessibilityTrusted
+                            ? "Granted, but the pointer tap is listen-only. Restart DualPoint."
+                            : "Optional. Without it, two devices cannot move at the same time."),
+                    isGood: engine.canSuppressPointerEvents
+                )
 
                 HStack(spacing: 8) {
                     if !hasPermission {
                         Button("Grant Input Monitoring") { engine.requestInputMonitoring() }
                             .buttonStyle(PrimaryButtonStyle(compact: true))
+                    } else {
+                        Button("Open Input Monitoring") { engine.openInputMonitoringSettings() }
+                            .buttonStyle(SecondaryButtonStyle(compact: true))
                     }
-                    Button("Open System Settings") { engine.openInputMonitoringSettings() }
-                        .buttonStyle(SecondaryButtonStyle(compact: true))
                     Button("Check Again") { engine.refreshPermissions() }
                         .buttonStyle(GhostButtonStyle(compact: true))
-                    if !engine.permissions.eventTapAvailable && engine.permissions.listenEventAccessGranted {
-                        Button("Request Accessibility") { engine.requestAccessibility() }
-                            .buttonStyle(GhostButtonStyle(compact: true))
-                    }
                     Spacer(minLength: 0)
+                }
+
+                if !engine.canSuppressPointerEvents {
+                    HStack(spacing: 8) {
+                        Button("Enable Accessibility") { engine.requestAccessibility() }
+                            .buttonStyle(SecondaryButtonStyle(compact: true))
+                        Button("Open Accessibility Settings") { engine.openAccessibilitySettings() }
+                            .buttonStyle(GhostButtonStyle(compact: true))
+                        Spacer(minLength: 0)
+                    }
                 }
             }
 
